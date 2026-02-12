@@ -242,7 +242,7 @@ export default function LoginPage() {
           border: "1px solid #f0f0f0",
         }}
       >
-        ⚡ 如果看到 email rate limit exceeded：先不要按註冊，等一下或先關閉 Confirm email。
+        ⚡ 註冊時須KEY IN 姓名，登入時無需再輸入姓名。
       </p>
     </div>
   );
