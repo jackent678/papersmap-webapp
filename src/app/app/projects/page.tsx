@@ -74,8 +74,12 @@ function statusLabel(s: StageValue["status"]) {
 }
 
 function isMissingRelationError(errMsg: string) {
-  // supabase/postgres 常見：relation "xxx" does not exist
   return /does not exist/i.test(errMsg) || /relation .* does not exist/i.test(errMsg);
+}
+
+function cleanNote(s: unknown) {
+  if (typeof s !== "string") return "";
+  return s.replace(/\s+$/g, "").trim();
 }
 
 export default function ProjectsPage() {
@@ -173,7 +177,6 @@ export default function ProjectsPage() {
       };
 
       if (!editingId) {
-        // ⭐ owner_id NOT NULL -> 這裡一定要帶
         const { error } = await supabase.from("projects").insert({
           ...payload,
           owner_id: user.id,
@@ -196,15 +199,12 @@ export default function ProjectsPage() {
   }
 
   async function detachProjectFromPlans(projectId: string) {
-    // 同時嘗試 weekly_plan_items / schedule_items（哪個存在就處理哪個）
     const tables = ["weekly_plan_items", "schedule_items"] as const;
 
     for (const t of tables) {
       const { error } = await supabase.from(t).update({ project_id: null }).eq("project_id", projectId);
       if (error) {
-        // 如果某張表不存在，就忽略（讓整套可跑）
         if (isMissingRelationError(error.message)) continue;
-        // 其他錯誤要拋出
         throw new Error(`${t} 解除專案關聯失敗：${error.message}`);
       }
     }
@@ -219,10 +219,8 @@ export default function ProjectsPage() {
     try {
       await ensureLoggedIn();
 
-      // ① 先解除行程關聯（避免 FK 擋）
       await detachProjectFromPlans(id);
 
-      // ② 再刪專案
       const { error } = await supabase.from("projects").delete().eq("id", id);
       if (error) throw new Error(error.message);
 
@@ -246,7 +244,7 @@ export default function ProjectsPage() {
         <div style={styles.topbar}>
           <div>
             <h1 style={styles.h1}>專案管理</h1>
-            <div style={styles.sub}>新增 / 編輯 / 刪除 + 6階段進度</div>
+            <div style={styles.sub}>新增 / 編輯 / 刪除 + 6階段進度（同步顯示備註）</div>
           </div>
 
           <div style={{ display: "flex", gap: 8 }}>
@@ -301,7 +299,7 @@ export default function ProjectsPage() {
                           <div style={{ fontWeight: 900, fontSize: 16, color: "#111827" }}>{p.name}</div>
                           {p.description && <div style={{ marginTop: 6, color: "#374151" }}>{p.description}</div>}
                           <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                            {new Date(p.created_at).toLocaleString()} · id: {p.id}
+                           
                           </div>
                         </div>
 
@@ -314,20 +312,26 @@ export default function ProjectsPage() {
                         </div>
                       </div>
 
+                      {/* ✅ 6階段：左=名稱 / 中=備註 / 右=狀態+進度 */}
                       <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
                         {STAGES.map((s) => {
                           const v = prog[s.key];
+                          const note = cleanNote(v.note ?? "");
+
                           return (
-                            <div key={s.key} style={styles.stageRow}>
-                              <div style={{ fontWeight: 700, color: "#374151" }}>{s.label}</div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                <div style={{ fontSize: 12, color: "#6b7280" }}>{statusLabel(v.status)}</div>
+                            <div key={s.key} style={styles.stageLine}>
+                              <div style={styles.stageLeft}>{s.label}</div>
+
+                              <div style={styles.stageNote}>
+                                {note ? note : <span style={{ opacity: 0.35 }}>（無備註）</span>}
+                              </div>
+
+                              <div style={styles.stageRight}>
+                                <div style={styles.stageStatus}>{statusLabel(v.status)}</div>
                                 <div style={styles.stageBarOuter}>
                                   <div style={{ ...styles.stageBarInner, width: `${clampPercent(v.percent)}%` }} />
                                 </div>
-                                <div style={{ fontSize: 12, color: "#374151", width: 40, textAlign: "right" }}>
-                                  {clampPercent(v.percent)}%
-                                </div>
+                                <div style={styles.stagePct}>{clampPercent(v.percent)}%</div>
                               </div>
                             </div>
                           );
@@ -512,17 +516,53 @@ const styles: Record<string, React.CSSProperties> = {
   progressOuter: { width: "100%", height: 10, borderRadius: 999, background: "#f3f4f6", border: "1px solid #e5e7eb", overflow: "hidden" },
   progressInner: { height: "100%", background: "#3b82f6" },
 
-  stageRow: {
-    display: "flex",
-    justifyContent: "space-between",
+  // ✅ 三欄對齊：左=階段名稱 / 中=備註 / 右=狀態+bar+%
+  stageLine: {
+    display: "grid",
+    gridTemplateColumns: "160px 1fr 260px",
+    gap: 14,
     alignItems: "center",
-    gap: 10,
-    border: "1px solid #f3f4f6",
-    borderRadius: 10,
-    padding: 10,
+    border: "1px solid #f1f5f9",
+    borderRadius: 12,
+    padding: "10px 12px",
     background: "#fff",
   },
-  stageBarOuter: { width: 180, height: 8, borderRadius: 999, background: "#f3f4f6", border: "1px solid #e5e7eb", overflow: "hidden" },
+  stageLeft: {
+    fontWeight: 900,
+    color: "#111827",
+    fontSize: 13,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  stageNote: {
+    fontSize: 12,
+    color: "#334155",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    lineHeight: 1.5,
+  },
+  stageRight: {
+    display: "grid",
+    gridTemplateColumns: "60px 1fr 44px",
+    gap: 10,
+    alignItems: "center",
+    justifyContent: "end",
+  },
+  stageStatus: {
+    fontSize: 12,
+    color: "#6b7280",
+    textAlign: "right",
+    whiteSpace: "nowrap",
+  },
+  stagePct: {
+    fontSize: 12,
+    color: "#374151",
+    textAlign: "right",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+  },
+  stageBarOuter: { width: "100%", height: 8, borderRadius: 999, background: "#f3f4f6", border: "1px solid #e5e7eb", overflow: "hidden" },
   stageBarInner: { height: "100%", background: "#10b981" },
 
   modalOverlay: {

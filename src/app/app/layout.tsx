@@ -13,8 +13,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           borderBottom: "1px solid #e5e5e5",
         }}
       >
-        <div style={{ fontWeight: 900 }}>客服專案系統（MVP）</div>
-        <div style={{ fontSize: 12, opacity: 0.7 }}>App</div>
+        <div style={{ fontWeight: 900 }}>客服部專案管理系統 v.0.0.1</div>
+
       </div>
 
       <div style={{ display: "flex" }}>

@@ -215,9 +215,9 @@ export default function WeeklyGridReadOnly() {
       {/* 工具列 */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <div style={{ fontWeight: 600, color: "#4b5563" }}>
-          行程規劃（週排班表）{" "}
+          {" "}
           <span style={{ fontSize: 12, opacity: 0.8 }}>
-            {isAdmin ? "（管理員：全部）" : "（我的）"}
+            {isAdmin ? "（管理員：全部）" : "（user）"}
             {myUserId ? "" : "（未登入）"}
           </span>
         </div>
@@ -243,7 +243,7 @@ export default function WeeklyGridReadOnly() {
 
       {/* 本週 */}
       <div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 10 }}>本週行程（只讀）</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 10 }}>本週行程</div>
 
         <div style={panel}>
           {loading ? (
@@ -283,7 +283,7 @@ export default function WeeklyGridReadOnly() {
                           <div style={{ fontWeight: 900 }}>{eng.name}</div>
                           {eng.phone && <div style={{ fontSize: 12, opacity: 0.75 }}>{eng.phone}</div>}
                           {!isAdmin && (
-                            <div style={{ fontSize: 11, opacity: 0.55, marginTop: 6 }}>（只顯示我的行程）</div>
+                            <div style={{ fontSize: 11, opacity: 0.55, marginTop: 6 }}></div>
                           )}
                         </td>
 
@@ -374,7 +374,7 @@ export default function WeeklyGridReadOnly() {
 
       {/* 下週 */}
       <div>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 10 }}>下週行程（只讀）</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 10 }}>下週行程</div>
 
         <div style={panel}>
           {loading ? (

@@ -79,7 +79,6 @@ export default function Sidebar() {
       {/* LOGO / TITLE */}
       <div style={header}>
         <div style={title}>客服專案系統</div>
-        <div style={sub}>MVP</div>
 
         {/* 使用者卡 */}
         <div style={userCard}>
@@ -129,7 +128,7 @@ export default function Sidebar() {
 /* ---------- STYLE ---------- */
 
 const shell: React.CSSProperties = {
-  width: 280, // ⭐ 原本太寬 → 收窄
+  width: 260, // ⭐ 原本太寬 → 收窄
   height: "100vh",
   background: "#fff",
   borderRight: "1px solid #e5e7eb",

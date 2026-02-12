@@ -19,13 +19,13 @@ type StageKey =
   | "run_validation"
   | "training";
 
-const STAGES: Array<{ key: StageKey; label: string }> = [
-  { key: "hardware_install", label: "硬體安裝定位" },
-  { key: "hardware_stability", label: "硬體穩定性調整" },
-  { key: "software_params", label: "軟體參數設定" },
-  { key: "ai_training", label: "AI參數訓練" },
-  { key: "run_validation", label: "跑料驗證" },
-  { key: "training", label: "教育訓練" },
+const STAGES: Array<{ key: StageKey; label: string; color: string }> = [
+  { key: "hardware_install", label: "硬體安裝", color: "#3b82f6" }, // blue
+  { key: "hardware_stability", label: "穩定性調整", color: "#22c55e" }, // green
+  { key: "software_params", label: "軟體參數", color: "#f97316" }, // orange
+  { key: "ai_training", label: "AI訓練", color: "#a855f7" }, // purple
+  { key: "run_validation", label: "跑料驗證", color: "#0ea5e9" }, // sky
+  { key: "training", label: "教育訓練", color: "#64748b" }, // slate
 ];
 
 function clampPercent(n: any) {
@@ -45,12 +45,20 @@ function getOverall(progress: any) {
   return clampPercent(avg);
 }
 
+function formatDate(iso: string) {
+  // iso: 2025-02-12T...
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  return `${m}月${day}日`;
+}
+
 export default function ProjectProgressList() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
   const [projects, setProjects] = useState<ProjectRow[]>([]);
-
-  // ✅ UI：儀錶板左上顯示名稱（取代 email）
   const [displayName, setDisplayName] = useState<string>("");
 
   async function loadMeName() {
@@ -110,61 +118,59 @@ export default function ProjectProgressList() {
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      {/* ✅ 這段就是你截圖紅框左上：儀錶板下方顯示名稱（取代 email） */}
-      <div style={{ marginBottom: 4 }}>
-        <div style={{ fontSize: 13, color: "#374151", fontWeight: 800 }}>{displayName}</div>
+      {/* 左上：顯示名稱 */}
+      <div style={meLine}>
+        <div style={meName}>{displayName}</div>
       </div>
 
-      {/* ✅ 專案進度卡片（右側一排 6 個進度條） */}
       {projects.map((p) => {
         const ov = overall(p);
 
         return (
           <div key={p.id} style={card}>
-            <div style={row}>
-              {/* 左側：專案名稱/描述（跟你截圖左邊文字區塊一樣） */}
+            {/* 上半：左資訊 + 右 6 欄 */}
+            <div style={topRow}>
+              {/* 左側資訊（更緊湊，像截圖） */}
               <div style={leftCol}>
-                <div style={{ fontWeight: 900, fontSize: 15 }}>{p.name}</div>
-                {p.description && <div style={{ marginTop: 6, color: "#374151" }}>{p.description}</div>}
+                <div style={projTitle}>{p.name}</div>
+                {p.description && <div style={projDesc}>{p.description}</div>}
+                <div style={metaLine}>
+                  <span style={metaDot} />
+                  <span style={metaText}>{formatDate(p.created_at)}</span>
+                </div>
               </div>
 
-              {/* 右側：一排 6 項進度條（你截圖大紅框那種排列） */}
-              <div style={rightCol}>
-                {STAGES.map((s) => {
-                  const pct = stagePercent(p, s.key);
-                  return (
-                    <div key={s.key} style={miniCol} title={s.label}>
-                      <div style={miniTitle}>{s.label}</div>
-                      <div style={miniBarOuter}>
-                        <div style={{ ...miniBarInner, width: `${pct}%` }} />
+              {/* 右側六項進度：固定一排，不換行；窄螢幕會橫向捲動 */}
+              <div style={stageRail}>
+                <div style={stageGrid}>
+                  {STAGES.map((s) => {
+                    const pct = stagePercent(p, s.key);
+                    return (
+                      <div key={s.key} style={stageCol} title={s.label}>
+                        <div style={stageLabel}>{s.label}</div>
+                        <div style={miniBarOuter}>
+                          <div style={{ ...miniBarInner, width: `${pct}%`, background: s.color }} />
+                        </div>
+                        <div style={stagePct}>{pct}%</div>
                       </div>
-                      <div style={miniPct}>{pct}%</div>
-                    </div>
-                  );
-                })}
-
-                {/* ✅ 如果你也想要「整體進度」放在最前面一格（可選）
-                    想要就把註解打開，並把 gridTemplateColumns 改成 repeat(7, ...)
-                */}
-                {/*
-                <div style={miniCol} title="整體進度">
-                  <div style={miniTitle}>整體進度</div>
-                  <div style={miniBarOuter}>
-                    <div style={{ ...miniBarInner, width: `${ov}%` }} />
-                  </div>
-                  <div style={miniPct}>{ov}%</div>
+                    );
+                  })}
                 </div>
-                */}
               </div>
             </div>
 
-            {/* ✅ 你若想保留「整體進度」在卡片下方一條大條（也可） */}
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>整體進度</div>
+            {/* 下半：整體完成進度（跟截圖） */}
+            <div style={overallWrap}>
+              <div style={overallHead}>
+                <div style={overallLabel}>整體完成進度</div>
+                <div style={overallPct}>{ov}%</div>
+              </div>
+
               <div style={barOuter}>
                 <div style={{ ...barInner, width: `${ov}%` }} />
               </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: "#374151", textAlign: "right" }}>{ov}%</div>
+
+              <div style={overallFoot}>已完成 06 階段</div>
             </div>
           </div>
         );
@@ -173,81 +179,147 @@ export default function ProjectProgressList() {
   );
 }
 
-/** ---------- styles ---------- */
+/* ---------- styles ---------- */
+
+const meLine: React.CSSProperties = { marginBottom: 2 };
+const meName: React.CSSProperties = { fontSize: 13, color: "#374151", fontWeight: 900 };
 
 const card: React.CSSProperties = {
   border: "1px solid #e5e7eb",
-  borderRadius: 12,
+  borderRadius: 14,
   padding: 14,
   background: "#fff",
 };
 
-const row: React.CSSProperties = {
+const topRow: React.CSSProperties = {
   display: "flex",
-  gap: 14,
+  gap: 16,
   alignItems: "flex-start",
 };
 
 const leftCol: React.CSSProperties = {
-  width: 220, // ✅ 左邊固定寬，對齊你截圖
+  width: 220, // 這裡可調：200~260
   flex: "0 0 auto",
+  paddingRight: 8,
+  borderRight: "1px solid #f1f5f9",
 };
 
-const rightCol: React.CSSProperties = {
+const projTitle: React.CSSProperties = {
+  fontWeight: 900,
+  fontSize: 15,
+  color: "#111827",
+};
+
+const projDesc: React.CSSProperties = {
+  marginTop: 6,
+  color: "#6b7280",
+  fontSize: 12,
+  lineHeight: 1.4,
+  whiteSpace: "pre-wrap",
+};
+
+const metaLine: React.CSSProperties = {
+  marginTop: 10,
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  color: "#6b7280",
+  fontSize: 12,
+};
+
+const metaDot: React.CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: 2,
+  border: "1px solid #d1d5db",
+  background: "#fff",
+};
+
+const metaText: React.CSSProperties = { fontVariantNumeric: "tabular-nums" };
+
+/** 右側：固定一排 6 欄 + 橫向捲動 */
+const stageRail: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
+  overflowX: "auto",
+  paddingBottom: 2,
+};
+
+const stageGrid: React.CSSProperties = {
   display: "grid",
-  gap: 12,
-  // ✅ 一排 6 個「小進度條」欄位；螢幕窄會自動換行
-  gridTemplateColumns: "repeat(6, minmax(120px, 1fr))",
+  gridTemplateColumns: "repeat(6, 160px)", // ✅ 固定每欄寬，才能像截圖一條線
+  gap: 18,
   alignItems: "start",
 };
 
-const miniCol: React.CSSProperties = {
+const stageCol: React.CSSProperties = {
   display: "grid",
   gap: 6,
 };
 
-const miniTitle: React.CSSProperties = {
+const stageLabel: React.CSSProperties = {
   fontSize: 12,
-  color: "#6b7280",
-  fontWeight: 800,
+  fontWeight: 900,
+  color: "#374151",
   whiteSpace: "nowrap",
   overflow: "hidden",
   textOverflow: "ellipsis",
 };
 
-const miniBarOuter: React.CSSProperties = {
-  width: "100%",
-  height: 8,
-  borderRadius: 999,
-  background: "#f3f4f6",
-  border: "1px solid #e5e7eb",
-  overflow: "hidden",
-};
-
-const miniBarInner: React.CSSProperties = {
-  height: "100%",
-  background: "#9ca3af", // ✅ 灰色，跟你截圖更像；想藍色可改回 #3b82f6
-};
-
-const miniPct: React.CSSProperties = {
+const stagePct: React.CSSProperties = {
   fontSize: 12,
   color: "#374151",
   textAlign: "right",
   fontVariantNumeric: "tabular-nums",
 };
 
+const miniBarOuter: React.CSSProperties = {
+  width: "100%",
+  height: 8,
+  borderRadius: 999,
+  background: "#eef2f7",
+  overflow: "hidden",
+};
+
+const miniBarInner: React.CSSProperties = {
+  height: "100%",
+  borderRadius: 999,
+};
+
+/** 下方：整體 */
+const overallWrap: React.CSSProperties = {
+  marginTop: 14,
+  paddingTop: 12,
+  borderTop: "1px solid #f1f5f9",
+};
+
+const overallHead: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "baseline",
+  marginBottom: 6,
+};
+
+const overallLabel: React.CSSProperties = { fontSize: 12, color: "#374151", fontWeight: 900 };
+const overallPct: React.CSSProperties = { fontSize: 14, color: "#111827", fontWeight: 900 };
+
 const barOuter: React.CSSProperties = {
   width: "100%",
   height: 10,
   borderRadius: 999,
-  background: "#f3f4f6",
-  border: "1px solid #e5e7eb",
+  background: "#eef2f7",
   overflow: "hidden",
 };
 
 const barInner: React.CSSProperties = {
   height: "100%",
+  borderRadius: 999,
   background: "#3b82f6",
+};
+
+const overallFoot: React.CSSProperties = {
+  marginTop: 8,
+  fontSize: 12,
+  color: "#94a3b8",
+  textAlign: "right",
 };
