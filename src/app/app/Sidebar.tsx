@@ -78,8 +78,6 @@ export default function Sidebar() {
     <aside style={shell}>
       {/* LOGO / TITLE */}
       <div style={header}>
-        <div style={title}>客服專案系統</div>
-
         {/* 使用者卡 */}
         <div style={userCard}>
           <div style={userLabel}>使用者</div>
