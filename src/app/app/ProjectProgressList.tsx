@@ -41,12 +41,13 @@ function getStagePercent(progress: any, key: StageKey) {
 
 function getOverall(progress: any) {
   if (!progress || typeof progress !== "object") return 0;
-  const avg = STAGES.reduce((sum, s) => sum + getStagePercent(progress, s.key), 0) / STAGES.length;
+  const avg =
+    STAGES.reduce((sum, s) => sum + getStagePercent(progress, s.key), 0) /
+    STAGES.length;
   return clampPercent(avg);
 }
 
 function formatDate(iso: string) {
-  // iso: 2025-02-12T...
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
@@ -110,14 +111,17 @@ export default function ProjectProgressList() {
   }, []);
 
   const overall = useMemo(() => (p: ProjectRow) => getOverall(p.progress), []);
-  const stagePercent = useMemo(() => (p: ProjectRow, k: StageKey) => getStagePercent(p.progress, k), []);
+  const stagePercent = useMemo(
+    () => (p: ProjectRow, k: StageKey) => getStagePercent(p.progress, k),
+    []
+  );
 
   if (loading) return <div style={{ color: "#6b7280" }}>載入中...</div>;
   if (msg) return <div style={{ color: "#b91c1c" }}>{msg}</div>;
   if (projects.length === 0) return <div style={{ color: "#6b7280" }}>（尚無專案）</div>;
 
   return (
-    <div style={{ display: "grid", gap: 12 }}>
+    <div style={{ display: "grid", gap: 10 }}>
       {/* 左上：顯示名稱 */}
       <div style={meLine}>
         <div style={meName}>{displayName}</div>
@@ -130,7 +134,7 @@ export default function ProjectProgressList() {
           <div key={p.id} style={card}>
             {/* 上半：左資訊 + 右 6 欄 */}
             <div style={topRow}>
-              {/* 左側資訊（更緊湊，像截圖） */}
+              {/* 左側資訊 */}
               <div style={leftCol}>
                 <div style={projTitle}>{p.name}</div>
                 {p.description && <div style={projDesc}>{p.description}</div>}
@@ -140,7 +144,7 @@ export default function ProjectProgressList() {
                 </div>
               </div>
 
-              {/* 右側六項進度：固定一排，不換行；窄螢幕會橫向捲動 */}
+              {/* 右側六項進度 */}
               <div style={stageRail}>
                 <div style={stageGrid}>
                   {STAGES.map((s) => {
@@ -149,7 +153,13 @@ export default function ProjectProgressList() {
                       <div key={s.key} style={stageCol} title={s.label}>
                         <div style={stageLabel}>{s.label}</div>
                         <div style={miniBarOuter}>
-                          <div style={{ ...miniBarInner, width: `${pct}%`, background: s.color }} />
+                          <div
+                            style={{
+                              ...miniBarInner,
+                              width: `${pct}%`,
+                              background: s.color,
+                            }}
+                          />
                         </div>
                         <div style={stagePct}>{pct}%</div>
                       </div>
@@ -159,7 +169,7 @@ export default function ProjectProgressList() {
               </div>
             </div>
 
-            {/* 下半：整體完成進度（跟截圖） */}
+            {/* 下半：整體完成進度 */}
             <div style={overallWrap}>
               <div style={overallHead}>
                 <div style={overallLabel}>整體完成進度</div>
@@ -179,52 +189,56 @@ export default function ProjectProgressList() {
   );
 }
 
-/* ---------- styles ---------- */
+/* ---------- styles（已調整：卡片更扁 + 字體放大） ---------- */
 
-const meLine: React.CSSProperties = { marginBottom: 2 };
-const meName: React.CSSProperties = { fontSize: 13, color: "#374151", fontWeight: 900 };
+const meLine: React.CSSProperties = { marginBottom: 0 };
+const meName: React.CSSProperties = {
+  fontSize: 16, // ⬆️ 放大
+  color: "#374151",
+  fontWeight: 900,
+};
 
 const card: React.CSSProperties = {
   border: "1px solid #e5e7eb",
   borderRadius: 14,
-  padding: 14,
+  padding: 10, // ⬇️ 原 14（卡片上下縮小最關鍵）
   background: "#fff",
 };
 
 const topRow: React.CSSProperties = {
   display: "flex",
-  gap: 16,
+  gap: 12, // ⬇️ 原 16（更緊湊）
   alignItems: "flex-start",
 };
 
 const leftCol: React.CSSProperties = {
-  width: 220, // 這裡可調：200~260
+  width: 190, // 可依你截圖再調：170~220
   flex: "0 0 auto",
-  paddingRight: 8,
+  paddingRight: 10,
   borderRight: "1px solid #f1f5f9",
 };
 
 const projTitle: React.CSSProperties = {
   fontWeight: 900,
-  fontSize: 15,
+  fontSize: 18, // ⬆️ 原 15
   color: "#111827",
 };
 
 const projDesc: React.CSSProperties = {
-  marginTop: 6,
+  marginTop: 4, // ⬇️ 原 6
   color: "#6b7280",
-  fontSize: 12,
-  lineHeight: 1.4,
+  fontSize: 14, // ⬆️ 原 12
+  lineHeight: 1.35,
   whiteSpace: "pre-wrap",
 };
 
 const metaLine: React.CSSProperties = {
-  marginTop: 10,
+  marginTop: 6, // ⬇️ 原 10（卡片高度會再縮）
   display: "flex",
   alignItems: "center",
   gap: 8,
   color: "#6b7280",
-  fontSize: 12,
+  fontSize: 13, // ⬆️ 原 12
 };
 
 const metaDot: React.CSSProperties = {
@@ -242,23 +256,23 @@ const stageRail: React.CSSProperties = {
   flex: 1,
   minWidth: 0,
   overflowX: "auto",
-  paddingBottom: 2,
+  paddingBottom: 0, // ⬇️ 原 2
 };
 
 const stageGrid: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(6, 160px)", // ✅ 固定每欄寬，才能像截圖一條線
-  gap: 18,
+  gridTemplateColumns: "repeat(6, 150px)", // ⬇️ 原 160（更像截圖緊湊）
+  gap: 14, // ⬇️ 原 18（減少高度與空隙）
   alignItems: "start",
 };
 
 const stageCol: React.CSSProperties = {
   display: "grid",
-  gap: 6,
+  gap: 4, // ⬇️ 原 6（卡片高度會更扁）
 };
 
 const stageLabel: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 14, // ⬆️ 原 12
   fontWeight: 900,
   color: "#374151",
   whiteSpace: "nowrap",
@@ -267,7 +281,7 @@ const stageLabel: React.CSSProperties = {
 };
 
 const stagePct: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 13, // ⬆️ 原 12
   color: "#374151",
   textAlign: "right",
   fontVariantNumeric: "tabular-nums",
@@ -275,7 +289,7 @@ const stagePct: React.CSSProperties = {
 
 const miniBarOuter: React.CSSProperties = {
   width: "100%",
-  height: 8,
+  height: 8, // 可改 7 更扁；或 9 更厚
   borderRadius: 999,
   background: "#eef2f7",
   overflow: "hidden",
@@ -288,8 +302,8 @@ const miniBarInner: React.CSSProperties = {
 
 /** 下方：整體 */
 const overallWrap: React.CSSProperties = {
-  marginTop: 14,
-  paddingTop: 12,
+  marginTop: 8, // ⬇️ 原 14（縮卡片高度的第二關鍵）
+  paddingTop: 8, // ⬇️ 原 12
   borderTop: "1px solid #f1f5f9",
 };
 
@@ -297,15 +311,24 @@ const overallHead: React.CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "baseline",
-  marginBottom: 6,
+  marginBottom: 4, // ⬇️ 原 6
 };
 
-const overallLabel: React.CSSProperties = { fontSize: 12, color: "#374151", fontWeight: 900 };
-const overallPct: React.CSSProperties = { fontSize: 14, color: "#111827", fontWeight: 900 };
+const overallLabel: React.CSSProperties = {
+  fontSize: 14, // ⬆️ 原 12
+  color: "#374151",
+  fontWeight: 900,
+};
+
+const overallPct: React.CSSProperties = {
+  fontSize: 18, // ⬆️ 原 14
+  color: "#111827",
+  fontWeight: 900,
+};
 
 const barOuter: React.CSSProperties = {
   width: "100%",
-  height: 10,
+  height: 10, // 可改 9 更扁；或 12 更厚
   borderRadius: 999,
   background: "#eef2f7",
   overflow: "hidden",
@@ -318,8 +341,8 @@ const barInner: React.CSSProperties = {
 };
 
 const overallFoot: React.CSSProperties = {
-  marginTop: 8,
-  fontSize: 12,
+  marginTop: 6, // ⬇️ 原 8
+  fontSize: 13, // ⬆️ 原 12
   color: "#94a3b8",
   textAlign: "right",
 };

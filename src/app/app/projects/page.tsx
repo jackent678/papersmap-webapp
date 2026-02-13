@@ -17,13 +17,10 @@ type StageValue = {
   status: "todo" | "doing" | "done";
   percent: number; // 0-100
   note?: string;
-
-  // ✅ 此階段預估天數（SLA）
   plan_days?: number; // >=0
 };
 
 type ProgressMeta = {
-  // ✅ 整體專案預估天數
   project_plan_days?: number; // >=0
 };
 
@@ -43,7 +40,6 @@ type ScheduleItemRow = {
   title: string;
   details: string | null;
   item_type: "work" | "leave" | "move";
-  // ✅ 來自行程規劃：1~6 對應 6 階段（存於 schedule_items.priority）
   priority?: number | null;
 };
 
@@ -124,7 +120,6 @@ function cleanNote(s: unknown) {
   return s.replace(/\s+$/g, "").trim();
 }
 
-/** ✅ 嘗試從行程文字推測屬於哪個 stage（沒有 stage_key 欄位時的折衷作法） */
 function detectStageFromText(text: string): StageKey | null {
   const t = (text || "").toLowerCase();
   for (const s of STAGES) {
@@ -138,8 +133,8 @@ function detectStageFromText(text: string): StageKey | null {
 type UsageByProject = Record<
   string,
   {
-    totalDays: number; // 專案使用天數（不重複日期）
-    stageDays: Record<StageKey, number>; // 每階段使用天數（不重複日期）
+    totalDays: number;
+    stageDays: Record<StageKey, number>;
   }
 >;
 
@@ -157,20 +152,20 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [usage, setUsage] = useState<UsageByProject>({});
 
+  // ✅ 展開/收合狀態：點卡片本體 toggle
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const toggleExpand = (id: string) => setExpandedIds((prev) => ({ ...prev, [id]: !prev[id] }));
+
   // modal state
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formDesc, setFormDesc] = useState("");
 
-  // ✅ 整體預估天數
   const [formProjectPlanDays, setFormProjectPlanDays] = useState<number>(0);
-
-  // ✅ 各階段（含 plan_days）
   const [formProgress, setFormProgress] = useState<Record<StageKey, StageValue>>(
     normalizeProgress(defaultProgress())
   );
-
   const [saving, setSaving] = useState(false);
 
   async function ensureLoggedIn() {
@@ -215,7 +210,6 @@ export default function ProjectsPage() {
     for (const r of rows) {
       if (!r.project_id) continue;
       const pid = r.project_id;
-
       const date = r.work_date;
 
       if (!byProjectDateSet.has(pid)) byProjectDateSet.set(pid, new Set<string>());
@@ -229,6 +223,7 @@ export default function ProjectsPage() {
         const text = `${r.title ?? ""}\n${r.details ?? ""}`;
         sk = detectStageFromText(text);
       }
+
       if (sk) {
         if (!byProjectStageDateSet.has(pid)) byProjectStageDateSet.set(pid, new Map());
         const m = byProjectStageDateSet.get(pid)!;
@@ -259,7 +254,7 @@ export default function ProjectsPage() {
       await ensureLoggedIn();
 
       const list = await loadProjectsOnly();
-      setProjects(list);
+      setprojectsAndExpandInit(list);
 
       const ids = list.map((p) => p.id);
       const u = await loadUsageForProjects(ids);
@@ -273,6 +268,16 @@ export default function ProjectsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  // ✅ 小幫手：確保新載入的專案會保留原本展開狀態（找不到的移除）
+  function setprojectsAndExpandInit(list: ProjectRow[]) {
+    setProjects(list);
+    setExpandedIds((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const p of list) next[p.id] = !!prev[p.id];
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -442,7 +447,7 @@ export default function ProjectsPage() {
         <div style={styles.card}>
           <div style={styles.cardHeader}>
             <h2 style={styles.h2}>專案列表</h2>
-            <div style={{ fontSize: 13, color: "#6b7280" }}>點卡片可編輯</div>
+            <div style={styles.hint}>點卡片展開/收合；按「編輯」進入編輯</div>
           </div>
 
           <div style={styles.cardBody}>
@@ -451,12 +456,12 @@ export default function ProjectsPage() {
             ) : projects.length === 0 ? (
               <div style={styles.emptyBox}>
                 <div style={{ fontWeight: 900 }}>沒有可顯示的專案</div>
-                <div style={{ marginTop: 6, opacity: 0.85, lineHeight: 1.55, fontSize: 13 }}>
+                <div style={{ marginTop: 6, opacity: 0.85, lineHeight: 1.5, fontSize: 13 }}>
                   可能原因：你尚未被加入任何專案 / RLS 權限限制 / 目前資料為空。
                 </div>
               </div>
             ) : (
-              <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ display: "grid", gap: 6 }}>
                 {projects.map((p) => {
                   const prog = normalizeProgress(p.progress);
                   const meta = normalizeMeta(p.progress);
@@ -466,118 +471,112 @@ export default function ProjectsPage() {
                   const planDays = clampNonNegInt(meta.project_plan_days ?? 0, 0);
                   const pOver = projectOverdue(p);
 
+                  const isOpen = !!expandedIds[p.id];
+
                   return (
-                    <div key={p.id} style={styles.projectCard} onClick={() => openEdit(p)} title="點一下編輯">
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div
+                      key={p.id}
+                      style={styles.projectCard}
+                      onClick={() => toggleExpand(p.id)}
+                      title="點一下展開/收合"
+                    >
+                      <div style={styles.projectTopRow}>
                         <div>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <div style={{ fontWeight: 900, fontSize: 16, color: "#111827" }}>{p.name}</div>
+                            <div style={styles.projectTitle}>{p.name}</div>
                             {pOver && <span style={styles.badgeRed}>超時</span>}
+                            <span style={styles.expandHint}>{isOpen ? "▲ 收合" : "▼ 展開"}</span>
                           </div>
 
-                          {p.description && (
-                            <div style={{ marginTop: 2, color: "#374151", fontSize: 13, lineHeight: 1.45 }}>
-                              {p.description}
-                            </div>
-                          )}
+                          {p.description && <div style={styles.projectDesc}>{p.description}</div>}
 
-                          <div style={{ marginTop: 2, fontSize: 13, color: "#6b7280" }}>
-                            <span
-                              style={{
-                                color: pOver ? "#ef4444" : "#6b7280",
-                                fontWeight: pOver ? 800 : 400,
-                                background: pOver ? "#fee2e2" : "transparent",
-                                padding: pOver ? "1px 6px" : 0,
-                                borderRadius: pOver ? 6 : 0,
-                                display: "inline-block",
-                              }}
-                            >
+                          <div style={styles.projectMetaLine}>
+                            <span style={styles.projectMetaPill(pOver)}>
                               專案天數：使用 {usedDays} 天
                               {planDays > 0 ? ` / 預估 ${planDays} 天` : "（未設定預估天數）"}
                             </span>
                           </div>
-
-                          <div style={{ marginTop: 2, fontSize: 13, color: "#6b7280" }}>
-                            {new Date(p.created_at).toLocaleString()} · id: {p.id}
-                          </div>
                         </div>
 
-                        <div style={{ minWidth: 180 }}>
-                          <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 4 }}>整體進度（平均）</div>
+                        {/* ✅ 右側整體進度 + 編輯鈕（阻止冒泡） */}
+                        <div style={styles.projectOverallBox} onClick={(e: any) => e.stopPropagation()}>
+                          <div style={styles.projectOverallTop}>
+                            <div style={styles.projectOverallLabel}>整體進度（平均）</div>
+                            <button
+                              style={styles.smallBtn}
+                              onClick={(e: any) => {
+                                e.stopPropagation();
+                                openEdit(p);
+                              }}
+                              title="編輯此專案"
+                            >
+                              ✏️ 編輯
+                            </button>
+                          </div>
+
                           <div style={styles.progressOuter}>
                             <div style={{ ...styles.progressInner, width: `${overall}%` }} />
                           </div>
-                          <div style={{ marginTop: 2, fontSize: 13, color: "#374151", textAlign: "right" }}>{overall}%</div>
+                          <div style={styles.projectOverallPct}>{overall}%</div>
                         </div>
                       </div>
 
-                      <div style={{ marginTop: 5, display: "grid", gap: 6 }}>
-                        {STAGES.map((s) => {
-                          const v = prog[s.key];
-                          const note = cleanNote(v.note ?? "");
+                      {/* ✅ 展開後才顯示 6 階段 */}
+                      {isOpen && (
+                        <div style={styles.stageList}>
+                          {STAGES.map((s) => {
+                            const v = prog[s.key];
+                            const note = cleanNote(v.note ?? "");
 
-                          const used = usage[p.id]?.stageDays?.[s.key] ?? 0;
-                          const plan = clampNonNegInt(v.plan_days ?? 0, 0);
-                          const overdue = stageOverdue(p, s.key);
+                            const used = usage[p.id]?.stageDays?.[s.key] ?? 0;
+                            const plan = clampNonNegInt(v.plan_days ?? 0, 0);
+                            const overdue = stageOverdue(p, s.key);
 
-                          return (
-                            <div
-                              key={s.key}
-                              style={{
-                                ...styles.stageLine,
-                                borderColor: overdue ? "#fecaca" : "#f1f5f9",
-                                background: overdue ? "#fff1f2" : "#fff",
-                              }}
-                            >
-                              <div style={styles.stageLeft}>{s.label}</div>
+                            return (
+                              <div
+                                key={s.key}
+                                style={{
+                                  ...styles.stageLine,
+                                  borderColor: overdue ? "#fecaca" : "#eef2f7",
+                                  background: overdue ? "#fff1f2" : "#fff",
+                                }}
+                              >
+                                <div style={styles.stageLeft}>{s.label}</div>
 
-                              <div style={styles.stageNote}>
-                                {note ? note : <span style={{ opacity: 0.35 }}>（無備註）</span>}
-                              </div>
+                                <div style={styles.stageNote}>
+                                  {note ? note : <span style={{ opacity: 0.4 }}>（無備註）</span>}
+                                </div>
 
-                              <div style={styles.stageRight}>
-                                <div style={{ textAlign: "right" }}>
-                                  <div style={{ ...styles.stageStatus, color: overdue ? "#b91c1c" : "#6b7280" }}>
-                                    {statusLabel(v.status)}
+                                <div style={styles.stageRight}>
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ ...styles.stageStatus, color: overdue ? "#b91c1c" : "#6b7280" }}>
+                                      {statusLabel(v.status)}
+                                    </div>
+
+                                    <div style={styles.stageUsageLine}>
+                                      <span style={styles.stageUsagePill(overdue)}>
+                                        使用 {used} 天{plan > 0 ? ` / 預估 ${plan} 天` : ""}
+                                      </span>
+                                    </div>
                                   </div>
 
-                                  <div style={{ fontSize: 13, marginTop: 2, color: "#6b7280" }}>
-                                    <span
+                                  <div style={styles.stageBarOuter}>
+                                    <div
                                       style={{
-                                        color: overdue ? "#ef4444" : "#6b7280",
-                                        fontWeight: overdue ? 800 : 400,
-                                        background: overdue ? "#fee2e2" : "transparent",
-                                        padding: overdue ? "1px 6px" : 0,
-                                        borderRadius: overdue ? 6 : 0,
-                                        display: "inline-block",
+                                        ...styles.stageBarInner,
+                                        width: `${clampPercent(v.percent)}%`,
+                                        background: overdue ? "#ef4444" : "#10b981",
                                       }}
-                                    >
-                                      使用 {used} 天{plan > 0 ? ` / 預估 ${plan} 天` : ""}
-                                    </span>
+                                    />
                                   </div>
-                                </div>
 
-                                <div style={styles.stageBarOuter}>
-                                  <div
-                                    style={{
-                                      ...styles.stageBarInner,
-                                      width: `${clampPercent(v.percent)}%`,
-                                      background: overdue ? "#ef4444" : "#10b981",
-                                    }}
-                                  />
+                                  <div style={styles.stagePct}>{clampPercent(v.percent)}%</div>
                                 </div>
-
-                                <div style={styles.stagePct}>{clampPercent(v.percent)}%</div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <div style={{ marginTop: 4, fontSize: 13, color: "#6b7280" }}>
-                        提醒：各階段「使用天數」優先使用行程規劃的「6 階段」(schedule_items.priority=1~6)；若舊資料未填，才回退用
-                        title/details 關鍵字推測。
-                      </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -597,7 +596,7 @@ export default function ProjectsPage() {
                 </button>
               </div>
 
-              <div style={{ marginTop: 5, display: "grid", gap: 12 }}>
+              <div style={{ marginTop: 6, display: "grid", gap: 10 }}>
                 <div>
                   <div style={styles.label}>專案名稱</div>
                   <input value={formName} onChange={(e) => setFormName(e.target.value)} style={styles.input} disabled={saving} />
@@ -608,7 +607,7 @@ export default function ProjectsPage() {
                   <textarea
                     value={formDesc}
                     onChange={(e) => setFormDesc(e.target.value)}
-                    style={{ ...styles.input, height: 90, resize: "vertical" }}
+                    style={{ ...styles.input, height: 88, resize: "vertical" }}
                     disabled={saving}
                   />
                 </div>
@@ -625,17 +624,17 @@ export default function ProjectsPage() {
                   />
                 </div>
 
-                <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
-                  <div style={{ fontWeight: 800, color: "#374151", marginBottom: 10 }}>6階段進度（含：各階段預估天數）</div>
+                <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 10 }}>
+                  <div style={{ fontWeight: 800, color: "#374151", marginBottom: 8 }}>6階段進度（含：各階段預估天數）</div>
 
-                  <div style={{ display: "grid", gap: 12 }}>
+                  <div style={{ display: "grid", gap: 10 }}>
                     {STAGES.map((s) => {
                       const v = formProgress[s.key];
                       return (
                         <div key={s.key} style={styles.editStageCard}>
                           <div style={{ fontWeight: 800, color: "#111827" }}>{s.label}</div>
 
-                          <div style={{ marginTop: 5, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                          <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
                             <div>
                               <div style={styles.label}>狀態</div>
                               <select
@@ -689,17 +688,17 @@ export default function ProjectsPage() {
                             </div>
                           </div>
 
-                          <div style={{ marginTop: 5 }}>
+                          <div style={{ marginTop: 6 }}>
                             <div style={styles.label}>備註（可選）</div>
                             <textarea
                               value={v.note ?? ""}
                               onChange={(e) =>
                                 setFormProgress((prev) => ({
-                                    ...prev,
-                                    [s.key]: { ...prev[s.key], note: e.target.value },
+                                  ...prev,
+                                  [s.key]: { ...prev[s.key], note: e.target.value },
                                 }))
                               }
-                              style={{ ...styles.input, height: 70, resize: "vertical" }}
+                              style={{ ...styles.input, height: 66, resize: "vertical" }}
                               disabled={saving}
                             />
                           </div>
@@ -733,43 +732,53 @@ export default function ProjectsPage() {
 }
 
 /**
- * ✅ 只放大字體：不改卡片大小/不改 spacing/不改 grid 結構
- * 你原本的尺寸設計保留，只調整 fontSize 與 lineHeight
+ * ✅ 最剛好密度版 + ✅ 點卡片展開/收合 + ✅ 編輯按鈕
  */
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, any> = {
   shell: { display: "flex", minHeight: "100vh", backgroundColor: "#f3f4f6" },
   sidebarWrap: { width: 260, flexShrink: 0, backgroundColor: "white", borderRight: "1px solid #e5e7eb" },
-  main: { flex: 1, minWidth: 0, padding: 18, fontFamily: "sans-serif" },
+  main: { flex: 1, minWidth: 0, padding: 10, fontFamily: "sans-serif" },
 
-  topbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12 },
-  h1: { fontSize: 20, fontWeight: 600, margin: 0, marginBottom: 4, color: "#111827" }, // ✅ 18→20
-  sub: { fontSize: 14, color: "#6b7280" }, // ✅ 12→14
+  topbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10 },
+  h1: { fontSize: 20, fontWeight: 700, margin: 0, marginBottom: 2, color: "#111827" },
+  sub: { fontSize: 13, color: "#6b7280", lineHeight: 1.35 },
 
   btn: {
-    padding: "7px 10px",
-    fontSize: 14, // ✅ 13→14
+    padding: "6px 10px",
+    fontSize: 14,
     color: "#6b7280",
     backgroundColor: "transparent",
     border: "1px solid #e5e7eb",
-    borderRadius: 6,
+    borderRadius: 8,
     cursor: "pointer",
   },
 
+  smallBtn: {
+    padding: "5px 10px",
+    fontSize: 12,
+    color: "#374151",
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 999,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+
   alert: {
-    marginBottom: 12,
-    padding: "10px 12px",
+    marginBottom: 10,
+    padding: "8px 10px",
     backgroundColor: "#fef2f2",
     border: "1px solid #fee2e2",
-    borderRadius: 8,
+    borderRadius: 10,
     color: "#b91c1c",
-    fontSize: 14, // ✅ 13→14
+    fontSize: 14,
     display: "flex",
     alignItems: "center",
     gap: 8,
   },
 
   badgeRed: {
-    fontSize: 12, // ✅ 11→12
+    fontSize: 12,
     fontWeight: 900,
     color: "#991b1b",
     background: "#fee2e2",
@@ -780,20 +789,63 @@ const styles: Record<string, React.CSSProperties> = {
 
   card: { backgroundColor: "white", borderRadius: 12, border: "1px solid #e5e7eb", overflow: "hidden" },
   cardHeader: {
-    padding: "12px 16px",
+    padding: "10px 14px",
     borderBottom: "1px solid #e5e7eb",
     backgroundColor: "#f9fafb",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "baseline",
-    gap: 12,
+    gap: 10,
   },
-  h2: { fontSize: 16, fontWeight: 600, margin: 0, color: "#374151" }, // ✅ 15→16
-  cardBody: { padding: 14 },
+  h2: { fontSize: 16, fontWeight: 700, margin: 0, color: "#374151" },
+  hint: { fontSize: 12, color: "#6b7280" },
+  cardBody: { padding: 8 },
 
-  emptyBox: { marginTop: 4, padding: 12, border: "1px solid #e5e7eb", borderRadius: 10, background: "#fff" },
+  emptyBox: { marginTop: 4, padding: 10, border: "1px solid #e5e7eb", borderRadius: 10, background: "#fff" },
 
-  projectCard: { border: "1px solid #e5e7eb", borderRadius: 10, padding: 10, background: "#fff", cursor: "pointer" },
+  projectCard: {
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    padding: 10,
+    background: "#fff",
+    cursor: "pointer",
+  },
+
+  projectTopRow: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start" },
+
+  projectTitle: { fontWeight: 900, fontSize: 16, color: "#111827" },
+
+  expandHint: { fontSize: 12, color: "#94a3b8", fontWeight: 700 },
+
+  projectDesc: {
+    marginTop: 2,
+    color: "#374151",
+    fontSize: 13,
+    lineHeight: 1.35,
+  },
+
+  projectMetaLine: { marginTop: 2, fontSize: 13, color: "#6b7280" },
+
+  projectMetaPill: (over: boolean) => ({
+    color: over ? "#ef4444" : "#6b7280",
+    fontWeight: over ? 800 : 500,
+    background: over ? "#fee2e2" : "transparent",
+    padding: over ? "1px 6px" : 0,
+    borderRadius: over ? 6 : 0,
+    display: "inline-block",
+  }),
+
+  projectOverallBox: { minWidth: 200 },
+
+  projectOverallTop: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    marginBottom: 3,
+  },
+  projectOverallLabel: { fontSize: 12, color: "#6b7280" },
+  projectOverallPct: { marginTop: 2, fontSize: 13, color: "#374151", textAlign: "right" },
 
   progressOuter: {
     width: "100%",
@@ -805,30 +857,35 @@ const styles: Record<string, React.CSSProperties> = {
   },
   progressInner: { height: "100%", background: "#3b82f6" },
 
+  stageList: { marginTop: 6, display: "grid", gap: 6 },
+
   stageLine: {
     display: "grid",
     gridTemplateColumns: "140px 1fr 300px",
     gap: 10,
     alignItems: "center",
-    border: "1px solid #f1f5f9",
-    borderRadius: 10,
+    border: "1px solid #eef2f7",
+    borderRadius: 12,
     padding: "6px 10px",
   },
+
   stageLeft: {
     fontWeight: 900,
     color: "#111827",
-    fontSize: 13, // ✅ 12→13
+    fontSize: 13,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
+
   stageNote: {
-    fontSize: 13, // ✅ 11→13
+    fontSize: 13,
     color: "#334155",
     whiteSpace: "pre-wrap",
     wordBreak: "break-word",
-    lineHeight: 1.45, // ✅ 1.35→1.45
+    lineHeight: 1.35,
   },
+
   stageRight: {
     display: "grid",
     gridTemplateColumns: "120px 1fr 40px",
@@ -836,20 +893,34 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "end",
   },
+
   stageStatus: {
-    fontSize: 13, // ✅ 11→13
+    fontSize: 13,
     color: "#6b7280",
     textAlign: "right",
     whiteSpace: "nowrap",
     fontWeight: 800,
   },
+
+  stageUsageLine: { fontSize: 13, marginTop: 1, color: "#6b7280" },
+
+  stageUsagePill: (over: boolean) => ({
+    color: over ? "#ef4444" : "#6b7280",
+    fontWeight: over ? 800 : 500,
+    background: over ? "#fee2e2" : "transparent",
+    padding: over ? "1px 6px" : 0,
+    borderRadius: over ? 6 : 0,
+    display: "inline-block",
+  }),
+
   stagePct: {
-    fontSize: 13, // ✅ 11→13
+    fontSize: 13,
     color: "#374151",
     textAlign: "right",
     fontVariantNumeric: "tabular-nums",
     whiteSpace: "nowrap",
   },
+
   stageBarOuter: {
     width: "100%",
     height: 6,
@@ -880,8 +951,8 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: "auto",
   },
 
-  input: { width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", outline: "none", fontSize: 14 }, // ✅ 輸入框字也放大
-  label: { fontSize: 13, opacity: 0.75, marginBottom: 6, fontWeight: 800 }, // ✅ 12→13
+  input: { width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", outline: "none", fontSize: 14 },
+  label: { fontSize: 13, opacity: 0.75, marginBottom: 6, fontWeight: 800 },
 
   editStageCard: { border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff" },
 };
