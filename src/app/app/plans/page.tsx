@@ -1,806 +1,795 @@
-"use client";
+'use client'
 
-import React, { useEffect, useMemo, useState } from "react";
-import Sidebar from "../Sidebar";
-import { supabase } from "@/lib/supabaseClient";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
+import PageHeader from '../_components/PageHeader'
+import { supabase } from '@/lib/supabaseClient'
+import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns'
+import { zhTW } from 'date-fns/locale'
 
-type EngineerRow = {
-  id: string;
-  user_id: string | null;
-  name: string;
-  phone: string | null;
-  is_active: boolean;
-};
-
-type ProjectRow = { id: string; name: string };
-
-type ScheduleItemRow = {
-  id: string;
-  engineer_id: string;
-  work_date: string; // YYYY-MM-DD
-  project_id: string | null;
-  title: string;
-  details: string | null;
-  item_type: "work" | "leave" | "move";
-  priority: 1 | 2 | 3 | 4 | 5 | 6;
-  sort_order: number;
-  created_at: string;
-  updated_at: string;
-};
-
-const VIEW_WEEKS = 4;
-const VIEW_DAYS = VIEW_WEEKS * 7;
-
-function toISODate(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+type DailyLog = {
+  id: string
+  org_id: string
+  user_id: string
+  log_date: string
+  status: 'draft' | 'pending' | 'approved' | 'rejected'
+  notes: string | null
+  created_at: string
+  updated_at: string
 }
 
-function startOfWeekMon(d: Date) {
-  const date = new Date(d);
-  const day = date.getDay(); // 0=Sun
-  const diff = (day === 0 ? -6 : 1) - day;
-  date.setDate(date.getDate() + diff);
-  date.setHours(0, 0, 0, 0);
-  return date;
+type DailyItem = {
+  id: string
+  daily_log_id: string
+  description: string
+  status: 'todo' | 'done'
+  priority: 'p1' | 'p2' | 'p3' | 'p4'
+  estimated_hours: number | null
+  actual_hours: number | null
+  notes: string | null
+  created_at: string
 }
 
-function addDays(d: Date, days: number) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
+type Approval = {
+  id: string
+  org_id: string
+  target_type: string
+  target_id: string
+  requester_user_id: string
+  approver_user_id: string | null
+  status: 'pending' | 'approved' | 'rejected'
+  comments: string | null
+  created_at: string
+  updated_at: string
 }
 
-function weekdayLabel(i: number) {
-  return ["一", "二", "三", "四", "五", "六", "日"][i] ?? "";
+type OrgUser = {
+  user_id: string
+  full_name: string
+  role: string
 }
 
-function clampStage(n: number): 1 | 2 | 3 | 4 | 5 | 6 {
-  if (n <= 1) return 1;
-  if (n >= 6) return 6;
-  return Math.round(n) as any;
+type ViewMode = 'day' | 'week' | 'month'
+
+function badgeClass(kind: 'ok' | 'warn' | 'danger' | 'muted') {
+  if (kind === 'ok') return 'bg-green-100 text-green-700'
+  if (kind === 'warn') return 'bg-yellow-100 text-yellow-700'
+  if (kind === 'danger') return 'bg-red-100 text-red-700'
+  return 'bg-gray-100 text-gray-600'
 }
 
-const STAGE_OPTIONS: Array<{ value: 1 | 2 | 3 | 4 | 5 | 6; label: string }> = [
-  { value: 1, label: "硬體安裝定位" },
-  { value: 2, label: "硬體穩定性調整" },
-  { value: 3, label: "軟體參數設定" },
-  { value: 4, label: "AI參數訓練" },
-  { value: 5, label: "跑料驗證" },
-  { value: 6, label: "教育訓練" },
-];
-
-function stageLabel(n: 1 | 2 | 3 | 4 | 5 | 6) {
-  return STAGE_OPTIONS.find((x) => x.value === n)?.label ?? `階段${n}`;
+function dailyStatusBadge(dailyLog: DailyLog | null) {
+  if (!dailyLog) {
+    return <span className={`text-xs px-2 py-0.5 rounded ${badgeClass('muted')}`}>未建立</span>
+  }
+  if (dailyLog.status === 'approved') return <span className={`text-xs px-2 py-0.5 rounded ${badgeClass('ok')}`}>已核准</span>
+  if (dailyLog.status === 'pending') return <span className={`text-xs px-2 py-0.5 rounded ${badgeClass('warn')}`}>審核中</span>
+  if (dailyLog.status === 'rejected') return <span className={`text-xs px-2 py-0.5 rounded ${badgeClass('danger')}`}>已退回</span>
+  return <span className={`text-xs px-2 py-0.5 rounded ${badgeClass('muted')}`}>草稿</span>
 }
 
 export default function PlansPage() {
-  const router = useRouter();
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
-  const [msg, setMsg] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState<string | null>(null);
+  // 用戶資訊
+  const [userId, setUserId] = useState<string | null>(null)
+  const [orgId, setOrgId] = useState<string | null>(null)
+  const [userRole, setUserRole] = useState<string>('member')
+  const isSupervisor = userRole === 'admin' || userRole === 'manager'
 
-  // ✅ 四週視圖起點：第一週的週一
-  const [viewStart, setViewStart] = useState<Date>(() => startOfWeekMon(new Date()));
+  // 日期選擇
+  const [selectedDate, setSelectedDate] = useState(new Date())
+  const [viewMode, setViewMode] = useState<ViewMode>('day')
 
-  const [engineers, setEngineers] = useState<EngineerRow[]>([]);
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
-  const [items, setItems] = useState<ScheduleItemRow[]>([]);
+  // 每日工作日誌
+  const [dailyLog, setDailyLog] = useState<DailyLog | null>(null)
+  const [dailyItems, setDailyItems] = useState<DailyItem[]>([])
+  const [approval, setApproval] = useState<Approval | null>(null)
 
-  // auth / role / scope
-  const [myUserId, setMyUserId] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [myEngineerId, setMyEngineerId] = useState<string | null>(null);
+  // 編輯狀態
+  const [isEditing, setIsEditing] = useState(false)
+  const [editedNotes, setEditedNotes] = useState('')
+  const [editedItems, setEditedItems] = useState<DailyItem[]>([])
 
-  // modal
-  const [open, setOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formEngineerId, setFormEngineerId] = useState<string>("");
-  const [formDate, setFormDate] = useState<string>("");
-  const [formType, setFormType] = useState<"work" | "leave" | "move">("work");
-  const [formProjectId, setFormProjectId] = useState<string | "">("");
-  const [formTitle, setFormTitle] = useState<string>("");
-  const [formDetails, setFormDetails] = useState<string>("");
-  const [formPriority, setFormPriority] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
-  const [saving, setSaving] = useState(false);
+  // 主管審核用的成員列表
+  const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
 
-  async function ensureLoggedIn() {
-    const { data, error } = await supabase.auth.getUser();
-    if (error) throw new Error(error.message);
+  // 週檢視的資料
+  const [weekLogs, setWeekLogs] = useState<Record<string, DailyLog>>({})
 
-    const user = data.user;
-    if (!user) {
-      router.replace("/login");
-      throw new Error("未登入");
-    }
-    setEmail(user.email ?? null);
-    return user;
-  }
-
-  async function loadAuthContext() {
-    const { data, error } = await supabase.auth.getUser();
-    if (error) throw new Error(error.message);
-
-    const user = data.user;
-    if (!user) {
-      router.replace("/login");
-      throw new Error("未登入");
-    }
-
-    setEmail(user.email ?? null);
-
-    const uid = user.id;
-    setMyUserId(uid);
-
-    const role = (user.app_metadata as any)?.role;
-    const admin = role === "admin";
-    setIsAdmin(admin);
-
-    return { user, uid, admin };
-  }
-
-  async function ensureMyEngineerRow(userId: string, fallbackEmail?: string | null) {
-    const { data: prof, error: pErr } = await supabase.from("profiles").select("name").eq("id", userId).maybeSingle();
-    if (pErr) throw new Error(pErr.message);
-
-    const displayName = (prof?.name ?? fallbackEmail ?? "未命名").toString();
-
-    const { data: eng, error: eErr } = await supabase.from("engineers").select("id").eq("user_id", userId).maybeSingle();
-    if (eErr) throw new Error(eErr.message);
-
-    if (!eng) {
-      const { error: iErr } = await supabase.from("engineers").insert({
-        user_id: userId,
-        name: displayName,
-        phone: null,
-        is_active: true,
-      });
-      if (iErr) throw new Error(iErr.message);
-    }
-  }
-
-  async function loadEngineers(admin: boolean, uid: string) {
-    let q = supabase
-      .from("engineers")
-      .select("id,user_id,name,phone,is_active")
-      .eq("is_active", true)
-      .order("created_at", { ascending: true });
-
-    if (!admin) q = q.eq("user_id", uid);
-
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-
-    const list = (data ?? []) as EngineerRow[];
-    setEngineers(list);
-
-    if (!admin) {
-      const my = list[0]?.id ?? null;
-      setMyEngineerId(my);
-      setFormEngineerId((prev) => prev || (my ?? ""));
-    } else {
-      setMyEngineerId(null);
-    }
-
-    return list;
-  }
-
-  async function loadProjects() {
-    const { data, error } = await supabase.from("projects").select("id,name").order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    setProjects((data ?? []) as ProjectRow[]);
-  }
-
-  // ✅ 載入四週（28天）資料
-  async function loadScheduleForRange(startDate: Date, admin: boolean, myEngId: string | null) {
-    const start = toISODate(startDate);
-    const end = toISODate(addDays(startDate, VIEW_DAYS)); // exclusive
-
-    let q = supabase
-      .from("schedule_items")
-      .select("id,engineer_id,work_date,project_id,title,details,item_type,priority,sort_order,created_at,updated_at")
-      .gte("work_date", start)
-      .lt("work_date", end)
-      .order("work_date", { ascending: true })
-      .order("engineer_id", { ascending: true })
-      .order("sort_order", { ascending: true })
-      .order("created_at", { ascending: true });
-
-    if (!admin) {
-      if (!myEngId) {
-        setItems([]);
-        return;
-      }
-      q = q.eq("engineer_id", myEngId);
-    }
-
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-    setItems((data ?? []) as ScheduleItemRow[]);
-  }
-
-  async function refresh() {
-    setMsg("");
-    setLoading(true);
-    try {
-      const { user, uid, admin } = await loadAuthContext();
-
-      if (!admin) {
-        await ensureMyEngineerRow(uid, user.email ?? null);
-      }
-
-      const eList = await loadEngineers(admin, uid);
-      await loadProjects();
-
-      const myEngIdLocal = admin ? null : eList[0]?.id ?? null;
-      if (!admin && !myEngIdLocal) {
-        throw new Error("找不到你的工程師資料（engineers.user_id 未綁定或 is_active=false）");
-      }
-
-      await loadScheduleForRange(viewStart, admin, myEngIdLocal);
-    } catch (e: any) {
-      setMsg("❌ " + (e?.message ?? "unknown"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
+  // ====== init ======
   useEffect(() => {
-    void refresh();
+    let cancelled = false
+
+    async function init() {
+      setLoading(true)
+      setError(null)
+
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+        if (!user) throw new Error('請先登入')
+        setUserId(user.id)
+
+        const { data: member, error: memberError } = await supabase
+          .from('org_members')
+          .select('org_id, role')
+          .eq('user_id', user.id)
+          .eq('is_active', true)
+          .single()
+
+        if (memberError) throw memberError
+        setOrgId(member.org_id)
+        setUserRole(member.role)
+
+        // 載入組織成員（供主管審核用）
+        if (member.role === 'admin' || member.role === 'manager') {
+          const { data: users } = await supabase
+            .from('v_org_users')
+            .select('user_id, full_name, role')
+            .eq('org_id', member.org_id)
+
+          if (users) setOrgUsers(users)
+        }
+
+        if (!cancelled) {
+          await loadDailyLog(selectedDate, member.org_id, user.id)
+          if (member.role === 'admin' || member.role === 'manager') {
+            await loadWeekData(member.org_id, user.id)
+          }
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? '初始化失敗')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    init()
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewStart]);
+  }, [])
 
-  // ✅ 四個週起點（週一）
-  const weekStarts = useMemo(
-    () => Array.from({ length: VIEW_WEEKS }).map((_, w) => addDays(viewStart, w * 7)),
-    [viewStart]
-  );
-
-  const projectName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects) m.set(p.id, p.name);
-    return (id: string | null) => (id ? m.get(id) ?? "（未知專案）" : "（未選專案）");
-  }, [projects]);
-
-  const itemsByCell = useMemo(() => {
-    const m = new Map<string, ScheduleItemRow[]>();
-    for (const it of items) {
-      const k = `${it.engineer_id}__${it.work_date}`;
-      const arr = m.get(k) ?? [];
-      arr.push(it);
-      m.set(k, arr);
+  // 當日期改變時重新載入
+  useEffect(() => {
+    if (orgId && userId) {
+      loadDailyLog(selectedDate, orgId, userId)
+      if (isSupervisor) loadWeekData(orgId, userId)
     }
-    return m;
-  }, [items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate, orgId, userId, isSupervisor])
 
-  function cellBackground(list: ScheduleItemRow[] | undefined) {
-    if (!list || list.length === 0) return "#fff";
-    if (list.some((x) => x.item_type === "leave" || x.item_type === "move")) return "#ffe766";
-    return "#fff";
-  }
+  // 載入特定日期的日誌
+  async function loadDailyLog(date: Date, orgIdParam: string, userIdParam: string) {
+    const dateStr = format(date, 'yyyy-MM-dd')
 
-  function badgeColor(p: 1 | 2 | 3 | 4 | 5 | 6) {
-    const palette = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#3b82f6"];
-    return palette[(p - 1) % palette.length];
-  }
-
-  function openNew(engineerId: string, dateISO: string) {
-    setEditingId(null);
-
-    const eid = isAdmin ? engineerId : myEngineerId ?? engineerId;
-
-    setFormEngineerId(eid);
-    setFormDate(dateISO);
-    setFormType("work");
-    setFormProjectId("");
-    setFormTitle("");
-    setFormDetails("");
-    setFormPriority(1);
-    setOpen(true);
-  }
-
-  function openEdit(it: ScheduleItemRow) {
-    if (!isAdmin && myEngineerId && it.engineer_id !== myEngineerId) {
-      setMsg("❌ 你沒有權限編輯別人的行程");
-      return;
-    }
-
-    setEditingId(it.id);
-    setFormEngineerId(it.engineer_id);
-    setFormDate(it.work_date);
-    setFormType(it.item_type);
-    setFormProjectId(it.project_id ?? "");
-    setFormTitle(it.title ?? "");
-    setFormDetails(it.details ?? "");
-    setFormPriority(clampStage(it.priority ?? 1));
-    setOpen(true);
-  }
-
-  async function saveItem() {
-    setMsg("");
-
-    if (!formEngineerId) return setMsg("❌ 未選工程師");
-    if (!formDate) return setMsg("❌ 未選日期");
-    if (!formTitle.trim()) return setMsg("❌ 請輸入內容（title）");
-
-    if (!isAdmin && myEngineerId && formEngineerId !== myEngineerId) {
-      return setMsg("❌ 你只能新增/編輯自己的行程");
-    }
-
-    setSaving(true);
     try {
-      await ensureLoggedIn();
+      const { data: log, error: logError } = await supabase
+        .from('daily_logs')
+        .select('*')
+        .eq('org_id', orgIdParam)
+        .eq('user_id', userIdParam)
+        .eq('log_date', dateStr)
+        .maybeSingle()
 
-      const payload = {
-        engineer_id: formEngineerId,
-        work_date: formDate,
-        project_id: formProjectId ? formProjectId : null,
-        title: formTitle.trim(),
-        details: formDetails.trim() ? formDetails.trim() : null,
-        item_type: formType,
-        priority: formPriority,
-      };
+      if (logError && logError.code !== 'PGRST116') throw logError
 
-      if (!editingId) {
-        const k = `${formEngineerId}__${formDate}`;
-        const list = itemsByCell.get(k) ?? [];
-        const nextSort = list.length === 0 ? 0 : Math.max(...list.map((x) => x.sort_order ?? 0)) + 1;
+      setDailyLog((log as DailyLog) ?? null)
 
-        const { error } = await supabase.from("schedule_items").insert({ ...payload, sort_order: nextSort });
-        if (error) throw new Error(error.message);
+      if (log) {
+        const { data: items, error: itemsErr } = await supabase
+          .from('daily_items')
+          .select('*')
+          .eq('daily_log_id', (log as any).id)
+          .order('priority', { ascending: true })
+        if (itemsErr) throw itemsErr
+        setDailyItems(((items as any) ?? []) as DailyItem[])
+
+        const { data: approvalData } = await supabase
+          .from('approvals')
+          .select('*')
+          .eq('target_type', 'daily_log')
+          .eq('target_id', (log as any).id)
+          .maybeSingle()
+
+        setApproval((approvalData as Approval) ?? null)
       } else {
-        const { error } = await supabase.from("schedule_items").update(payload).eq("id", editingId);
-        if (error) throw new Error(error.message);
+        setDailyItems([])
+        setApproval(null)
       }
-
-      setOpen(false);
-      await loadScheduleForRange(viewStart, isAdmin, myEngineerId);
-      setMsg("✅ 已儲存");
     } catch (e: any) {
-      setMsg("❌ 儲存失敗：" + (e?.message ?? "unknown"));
-    } finally {
-      setSaving(false);
+      setError(e?.message ?? '載入日誌失敗')
     }
   }
 
-  async function deleteItem() {
-    if (!editingId) return;
-    const ok = confirm("確定要刪除這筆行程？");
-    if (!ok) return;
+  // 載入週資料（你原本是 supervisor 才用）
+  async function loadWeekData(orgIdParam: string, userIdParam: string) {
+    const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 })
+    const weekEnd = endOfWeek(selectedDate, { weekStartsOn: 1 })
+    const days = eachDayOfInterval({ start: weekStart, end: weekEnd })
 
-    setSaving(true);
-    setMsg("");
+    const logs: Record<string, DailyLog> = {}
+    for (const day of days) {
+      const dateStr = format(day, 'yyyy-MM-dd')
+      const { data } = await supabase
+        .from('daily_logs')
+        .select('*')
+        .eq('org_id', orgIdParam)
+        .eq('user_id', userIdParam)
+        .eq('log_date', dateStr)
+        .maybeSingle()
+      if (data) logs[dateStr] = data as DailyLog
+    }
+
+    setWeekLogs(logs)
+  }
+
+  // ✅ 開始編輯（支援：未建立也能開始填寫）
+  function startEditing() {
+    setError(null)
+    setSuccess(null)
+    setIsEditing(true)
+    setEditedNotes(dailyLog?.notes || '')
+    setEditedItems(dailyItems.map((item) => ({ ...item })))
+  }
+
+  function cancelEditing() {
+    setIsEditing(false)
+    setEditedNotes('')
+    setEditedItems([])
+  }
+
+  // 新增工作項目
+  function addItem() {
+    const newItem: DailyItem = {
+      id: `temp_${Date.now()}_${Math.random()}`,
+      daily_log_id: dailyLog?.id || '',
+      description: '',
+      status: 'todo',
+      priority: 'p3',
+      estimated_hours: null,
+      actual_hours: null,
+      notes: null,
+      created_at: new Date().toISOString(),
+    }
+    setEditedItems((prev) => [...prev, newItem])
+  }
+
+  function updateItem(id: string, updates: Partial<DailyItem>) {
+    setEditedItems((items) => items.map((item) => (item.id === id ? { ...item, ...updates } : item)))
+  }
+
+  function removeItem(id: string) {
+    setEditedItems((items) => items.filter((item) => item.id !== id))
+  }
+
+  // 建立或更新日誌（你原本就有，我保留並補強）
+  async function handleSaveDailyLog() {
+    if (!orgId || !userId) return
+
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+
     try {
-      await ensureLoggedIn();
+      const dateStr = format(selectedDate, 'yyyy-MM-dd')
 
-      if (!isAdmin && myEngineerId && formEngineerId !== myEngineerId) {
-        throw new Error("你只能刪除自己的行程");
+      if (dailyLog) {
+        // 更新現有日誌
+        const { error: updateError } = await supabase
+          .from('daily_logs')
+          .update({
+            notes: editedNotes,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', dailyLog.id)
+
+        if (updateError) throw updateError
+
+        // 更新工作項目
+        for (const item of editedItems) {
+          if (item.id.startsWith('temp_')) {
+            const { error: insertError } = await supabase.from('daily_items').insert({
+              daily_log_id: dailyLog.id,
+              description: item.description,
+              status: item.status,
+              priority: item.priority,
+              estimated_hours: item.estimated_hours,
+              notes: item.notes,
+            })
+            if (insertError) throw insertError
+          } else {
+            const { error: updError } = await supabase
+              .from('daily_items')
+              .update({
+                description: item.description,
+                status: item.status,
+                priority: item.priority,
+                estimated_hours: item.estimated_hours,
+                actual_hours: item.actual_hours,
+                notes: item.notes,
+              })
+              .eq('id', item.id)
+            if (updError) throw updError
+          }
+        }
+
+        // 刪除被移除的項目
+        const originalIds = dailyItems.map((i) => i.id)
+        const newIds = editedItems.map((i) => i.id).filter((id) => !id.startsWith('temp_'))
+        const toDelete = originalIds.filter((id) => !newIds.includes(id))
+
+        if (toDelete.length > 0) {
+          const { error: delErr } = await supabase.from('daily_items').delete().in('id', toDelete)
+          if (delErr) throw delErr
+        }
+      } else {
+        // ✅ 建立新日誌
+        const { data: newLog, error: insertError } = await supabase
+          .from('daily_logs')
+          .insert({
+            org_id: orgId,
+            user_id: userId,
+            log_date: dateStr,
+            notes: editedNotes,
+            status: 'draft',
+          })
+          .select()
+          .single()
+
+        if (insertError) throw insertError
+
+        // 新增工作項目
+        const itemsToInsert = editedItems
+          .filter((x) => x.description?.trim())
+          .map((item) => ({
+            daily_log_id: newLog.id,
+            description: item.description,
+            status: item.status,
+            priority: item.priority,
+            estimated_hours: item.estimated_hours,
+            notes: item.notes,
+          }))
+
+        if (itemsToInsert.length > 0) {
+          const { error: itemsError } = await supabase.from('daily_items').insert(itemsToInsert)
+          if (itemsError) throw itemsError
+        }
+
+        setDailyLog(newLog as any)
       }
 
-      const { error } = await supabase.from("schedule_items").delete().eq("id", editingId);
-      if (error) throw new Error(error.message);
-
-      setOpen(false);
-      await loadScheduleForRange(viewStart, isAdmin, myEngineerId);
-      setMsg("✅ 已刪除");
+      await loadDailyLog(selectedDate, orgId, userId)
+      setIsEditing(false)
+      setSuccess('日誌已儲存')
     } catch (e: any) {
-      setMsg("❌ 刪除失敗：" + (e?.message ?? "unknown"));
+      setError(e?.message ?? '儲存失敗')
     } finally {
-      setSaving(false);
+      setSaving(false)
     }
   }
+
+  // 送審
+  async function handleSubmitForApproval() {
+    if (!dailyLog || !orgId || !userId) return
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      const { error: updateError } = await supabase
+        .from('daily_logs')
+        .update({ status: 'pending', updated_at: new Date().toISOString() })
+        .eq('id', dailyLog.id)
+      if (updateError) throw updateError
+
+      // 建立審核記錄（避免重複：若已存在 pending 就不再 insert）
+      const { data: existing } = await supabase
+        .from('approvals')
+        .select('id,status')
+        .eq('org_id', orgId)
+        .eq('target_type', 'daily_log')
+        .eq('target_id', dailyLog.id)
+        .maybeSingle()
+
+      if (!existing) {
+        const { error: approvalError } = await supabase.from('approvals').insert({
+          org_id: orgId,
+          target_type: 'daily_log',
+          target_id: dailyLog.id,
+          requester_user_id: userId,
+          status: 'pending',
+        })
+        if (approvalError) throw approvalError
+      }
+
+      await loadDailyLog(selectedDate, orgId, userId)
+      setSuccess('已送交主管審核')
+    } catch (e: any) {
+      setError(e?.message ?? '送審失敗')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // 審核（主管用）
+  async function handleApproval(approved: boolean, comments?: string) {
+    if (!dailyLog || !approval || !userId || !orgId) return
+
+    setSaving(true)
+    setError(null)
+    setSuccess(null)
+
+    try {
+      const newStatus = approved ? 'approved' : 'rejected'
+
+      const { error: approvalError } = await supabase
+        .from('approvals')
+        .update({
+          status: newStatus,
+          approver_user_id: userId,
+          comments: comments || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', approval.id)
+      if (approvalError) throw approvalError
+
+      const { error: logError } = await supabase
+        .from('daily_logs')
+        .update({
+          status: newStatus as any,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', dailyLog.id)
+      if (logError) throw logError
+
+      await loadDailyLog(selectedDate, orgId, userId)
+      setSuccess(approved ? '已核准' : '已退回')
+    } catch (e: any) {
+      setError(e?.message ?? '審核失敗')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // 切換日期
+  function changeDate(delta: number) {
+    const newDate = new Date(selectedDate)
+    newDate.setDate(newDate.getDate() + delta)
+    setSelectedDate(newDate)
+    setIsEditing(false)
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="每日 / 週計畫" description="載入中..." />
+        <div className="rounded border bg-white p-8 text-center text-gray-500">載入中...</div>
+      </div>
+    )
+  }
+
+  // ✅ 可編輯條件：未建立 / 草稿 / 已退回
+  const canEdit = !dailyLog || dailyLog.status === 'draft' || dailyLog.status === 'rejected'
+  const canSubmit = !!dailyLog && dailyLog.status === 'draft' && dailyItems.length > 0
 
   return (
-    <div style={styles.shell}>
-      <div style={styles.sidebarWrap}>
-        <Sidebar />
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="每日 / 週計畫"
+        description={isSupervisor ? '檢視團隊成員的工作計畫並進行審核' : '建立每日工作計畫，送交主管審核'}
+      />
 
-      <div style={styles.main}>
-        <div style={styles.topbar}>
-          <div>
-            <h1 style={styles.h1}>行程規劃</h1>
-            <div style={styles.sub}>
-              四週排班表（可編輯）· {email ?? ""}{" "}
-              <span style={{ marginLeft: 8, fontSize: 12, opacity: 0.75 }}>
-                {isAdmin ? "（管理員：全部）" : "（我的）"}
-              </span>
+      {error && <div className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+      {success && <div className="rounded border border-green-200 bg-green-50 p-4 text-sm text-green-700">{success}</div>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* 左側 */}
+        <div className="lg:col-span-1">
+          <div className="rounded border bg-white p-4 space-y-4">
+            <div className="flex gap-2">
+              {(['day', 'week', 'month'] as ViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className={`flex-1 rounded px-3 py-1.5 text-xs ${
+                    viewMode === mode ? 'bg-black text-white' : 'border hover:bg-gray-50'
+                  }`}
+                >
+                  {mode === 'day' && '日'}
+                  {mode === 'week' && '週'}
+                  {mode === 'month' && '月'}
+                </button>
+              ))}
             </div>
-          </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => setViewStart((w) => addDays(w, -VIEW_DAYS))} style={styles.btn}>
-              ← 前四週
-            </button>
-            <button onClick={() => setViewStart(startOfWeekMon(new Date()))} style={styles.btn}>
-              本週
-            </button>
-            <button onClick={() => setViewStart((w) => addDays(w, VIEW_DAYS))} style={styles.btn}>
-              後四週 →
-            </button>
-          </div>
-        </div>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <button onClick={() => changeDate(-1)} className="p-2 hover:bg-gray-100 rounded">
+                  ←
+                </button>
+                <span className="text-sm font-medium">{format(selectedDate, 'yyyy年MM月dd日', { locale: zhTW })}</span>
+                <button onClick={() => changeDate(1)} className="p-2 hover:bg-gray-100 rounded">
+                  →
+                </button>
+              </div>
+              <button onClick={() => setSelectedDate(new Date())} className="w-full rounded border px-3 py-2 text-sm hover:bg-gray-50">
+                今天
+              </button>
+            </div>
 
-        {msg && (
-          <div style={styles.alert}>
-            <span>⚠️</span>
-            {msg}
-          </div>
-        )}
-
-        <div style={styles.card}>
-          <div style={styles.cardHeader}>
-            <h2 style={styles.h2}>行程規劃（週排班表）</h2>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>點格子新增；點卡片可編輯。</div>
-          </div>
-
-          <div style={styles.cardBody}>
-            {loading ? (
-              <div style={{ color: "#6b7280" }}>載入中...</div>
-            ) : (
-              <div style={{ display: "grid", gap: 18 }}>
-                {weekStarts.map((ws, wIdx) => {
-                  const days7 = Array.from({ length: 7 }).map((_, i) => addDays(ws, i));
-                  const weekTitle = `${ws.getMonth() + 1}月${ws.getDate()}日 - ${
-                    days7[6].getMonth() + 1
-                  }月${days7[6].getDate()}日（第${wIdx + 1}週）`;
-
+            {viewMode === 'week' && (
+              <div className="space-y-2">
+                <div className="text-xs font-medium text-gray-500">本週進度</div>
+                {eachDayOfInterval({
+                  start: startOfWeek(selectedDate, { weekStartsOn: 1 }),
+                  end: endOfWeek(selectedDate, { weekStartsOn: 1 }),
+                }).map((day: Date) => {
+                  const dateStr = format(day, 'yyyy-MM-dd')
+                  const log = weekLogs[dateStr]
                   return (
-                    <div key={wIdx} style={styles.weekBlock}>
-                      <div style={styles.weekTitle}>{weekTitle}</div>
-
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={styles.table}>
-                          <thead>
-                            <tr>
-                              <th style={styles.th}>工程師</th>
-                              {days7.map((d, idx) => {
-                                const label = `${d.getMonth() + 1}月${d.getDate()}日`;
-                                const isWeekend = idx >= 5;
-                                return (
-                                  <th key={idx} style={{ ...styles.th, color: isWeekend ? "#c11" : "#111" }}>
-                                    <div style={{ fontWeight: 900 }}>{label}</div>
-                                    <div style={{ fontSize: 12, opacity: 0.85 }}>{weekdayLabel(idx)}</div>
-                                  </th>
-                                );
-                              })}
-                            </tr>
-                          </thead>
-
-                          <tbody>
-                            {engineers.length === 0 ? (
-                              <tr>
-                                <td colSpan={8} style={{ padding: 14, border: "1px solid #e5e7eb" }}>
-                                  {isAdmin
-                                    ? "（尚無工程師資料。請先在 engineers 表新增。）"
-                                    : "（找不到你的工程師資料。請確認 engineers.user_id 已綁定你的帳號，且 is_active=true。）"}
-                                </td>
-                              </tr>
-                            ) : (
-                              engineers.map((eng) => (
-                                <tr key={eng.id}>
-                                  <td style={styles.tdLeft}>
-                                    <div style={{ fontWeight: 900 }}>{eng.name}</div>
-                                    {eng.phone && <div style={{ fontSize: 12, opacity: 0.75 }}>{eng.phone}</div>}
-                                  </td>
-
-                                  {days7.map((d, idx) => {
-                                    const dateISO = toISODate(d);
-                                    const k = `${eng.id}__${dateISO}`;
-                                    const list = itemsByCell.get(k) ?? [];
-
-                                    return (
-                                      <td
-                                        key={idx}
-                                        style={{
-                                          ...styles.tdCell,
-                                          background: cellBackground(list),
-                                          cursor: "pointer",
-                                        }}
-                                        onClick={() => openNew(eng.id, dateISO)}
-                                        title={isAdmin ? "點一下新增行程" : "點一下新增我的行程"}
-                                      >
-                                        {list.length === 0 ? (
-                                          <div style={{ opacity: 0.35, fontSize: 12 }}>（空）</div>
-                                        ) : (
-                                          <div style={{ display: "grid", gap: 8 }}>
-                                            {list.map((it) => (
-                                              <div
-                                                key={it.id}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  openEdit(it);
-                                                }}
-                                                style={styles.itemCard}
-                                                title="點一下編輯"
-                                              >
-                                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                                                  <div style={{ fontWeight: 900, fontSize: 13, whiteSpace: "pre-wrap" }}>
-                                                    {it.title}
-                                                  </div>
-                                                  <div
-                                                    style={{
-                                                      width: 10,
-                                                      height: 10,
-                                                      borderRadius: 999,
-                                                      marginTop: 3,
-                                                      background: badgeColor(it.priority),
-                                                      flex: "0 0 auto",
-                                                    }}
-                                                    title={`階段：${stageLabel(it.priority)}`}
-                                                  />
-                                                </div>
-
-                                                <div style={{ marginTop: 4, fontSize: 12, opacity: 0.85 }}>
-                                                  {it.item_type === "leave"
-                                                    ? "休假"
-                                                    : it.item_type === "move"
-                                                    ? "移動"
-                                                    : `${projectName(it.project_id)} · ${stageLabel(it.priority)}`}
-                                                </div>
-
-                                                {it.details && (
-                                                  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.9, whiteSpace: "pre-wrap" }}>
-                                                    {it.details}
-                                                  </div>
-                                                )}
-                                              </div>
-                                            ))}
-                                          </div>
-                                        )}
-                                      </td>
-                                    );
-                                  })}
-                                </tr>
-                              ))
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
+                    <button
+                      key={dateStr}
+                      onClick={() => setSelectedDate(day)}
+                      className={`w-full flex items-center justify-between p-2 rounded text-sm ${
+                        isSameDay(day, selectedDate) ? 'bg-black text-white' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <span>{format(day, 'MM/dd EEE', { locale: zhTW })}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded ${badgeClass(!log ? 'muted' : log.status === 'approved' ? 'ok' : log.status === 'pending' ? 'warn' : log.status === 'rejected' ? 'danger' : 'muted')}`}>
+                        {!log && '未填寫'}
+                        {log?.status === 'draft' && '草稿'}
+                        {log?.status === 'pending' && '審核中'}
+                        {log?.status === 'approved' && '已核准'}
+                        {log?.status === 'rejected' && '已退回'}
+                      </span>
+                    </button>
+                  )
                 })}
-
-                <div style={{ marginTop: 2, fontSize: 12, opacity: 0.7, color: "#6b7280" }}>
-                  顏色規則：格子內包含「休假/移動」會整格變黃；卡片右上圓點代表 6 階段（用顏色做區分）。
-                </div>
               </div>
             )}
           </div>
         </div>
 
-        {/* Modal */}
-        {open && (
-          <div style={styles.modalOverlay} onClick={() => !saving && setOpen(false)}>
-            <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontWeight: 900, fontSize: 16 }}>{editingId ? "編輯行程" : "新增行程"}</div>
-                <button onClick={() => !saving && setOpen(false)} style={styles.btn}>
-                  關閉
-                </button>
+        {/* 右側 */}
+        <div className="lg:col-span-3">
+          <div className="rounded border bg-white p-6 space-y-6">
+            {/* 標題列 */}
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-medium">{format(selectedDate, 'yyyy年MM月dd日', { locale: zhTW })} 工作計畫</h2>
+                <div className="flex items-center gap-2 mt-1">{dailyStatusBadge(dailyLog)}</div>
               </div>
 
-              <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <div>
-                    <div style={styles.label}>工程師</div>
-                    <select
-                      value={formEngineerId}
-                      onChange={(e) => setFormEngineerId(e.target.value)}
-                      style={styles.input}
-                      disabled={saving || (!isAdmin && !!myEngineerId)}
-                      title={!isAdmin ? "一般使用者只能編輯自己的行程" : ""}
-                    >
-                      {engineers.map((e) => (
-                        <option key={e.id} value={e.id}>
-                          {e.name}
-                        </option>
-                      ))}
-                    </select>
-                    {!isAdmin && <div style={{ fontSize: 12, opacity: 0.65, marginTop: 6 }}>（你只能新增/編輯自己的行程）</div>}
-                  </div>
-
-                  <div>
-                    <div style={styles.label}>日期</div>
-                    <input value={formDate} onChange={(e) => setFormDate(e.target.value)} style={styles.input} disabled={saving} />
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  <div>
-                    <div style={styles.label}>類型</div>
-                    <select value={formType} onChange={(e) => setFormType(e.target.value as any)} style={styles.input} disabled={saving}>
-                      <option value="work">工作</option>
-                      <option value="leave">休假</option>
-                      <option value="move">移動</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={styles.label}>專案（可選）</div>
-                    <select
-                      value={formProjectId}
-                      onChange={(e) => setFormProjectId(e.target.value)}
-                      style={styles.input}
-                      disabled={saving || formType !== "work"}
-                      title={formType !== "work" ? "休假/移動不需選專案" : ""}
-                    >
-                      <option value="">（未選專案）</option>
-                      {projects.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <div style={styles.label}>階段</div>
-                    <select
-                      value={String(formPriority)}
-                      onChange={(e) => setFormPriority(clampStage(Number(e.target.value)))}
-                      style={styles.input}
-                      disabled={saving || formType !== "work"}
-                      title={formType !== "work" ? "休假/移動不需選階段" : ""}
-                    >
-                      {STAGE_OPTIONS.map((s) => (
-                        <option key={s.value} value={String(s.value)}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <div style={styles.label}>內容（title）</div>
-                  <input
-                    value={formTitle}
-                    onChange={(e) => setFormTitle(e.target.value)}
-                    style={styles.input}
-                    disabled={saving}
-                    placeholder="例如：NAPA專案維修 / 休假 / 移動整合"
-                  />
-                </div>
-
-                <div>
-                  <div style={styles.label}>細節（可多行）</div>
-                  <textarea
-                    value={formDetails}
-                    onChange={(e) => setFormDetails(e.target.value)}
-                    style={{ ...styles.input, height: 90, resize: "vertical" }}
-                    disabled={saving}
-                    placeholder={"可輸入多行，例如：\nApply RTV & machine\nScrew sec.spreader\nASAA-14-317/318"}
-                  />
-                </div>
-
-                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-                  {editingId && (
-                    <button onClick={deleteItem} style={{ ...styles.btn, background: "#fff" }} disabled={saving}>
-                      刪除
-                    </button>
-                  )}
-                  <button onClick={saveItem} style={styles.btn} disabled={saving}>
-                    {saving ? "儲存中..." : "儲存"}
+              {/* ✅ 按鈕區：加入「建立」 */}
+              <div className="flex gap-2">
+                {!isEditing && canEdit && (
+                  <button
+                    onClick={startEditing}
+                    className="rounded border px-4 py-2 text-sm hover:bg-gray-50"
+                  >
+                    {dailyLog ? '編輯' : '建立 / 開始填寫'}
                   </button>
-                </div>
+                )}
 
-                <div style={{ fontSize: 12, opacity: 0.7, color: "#6b7280" }}>
-                  備註：點格子是新增；點卡片是編輯。實際權限以 Supabase RLS 為準（一般使用者只會看到/操作自己的資料）。
-                </div>
+                {isEditing && (
+                  <>
+                    <button
+                      onClick={cancelEditing}
+                      className="rounded border px-4 py-2 text-sm hover:bg-gray-50"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleSaveDailyLog}
+                      disabled={saving}
+                      className="rounded bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
+                    >
+                      {saving ? '儲存中...' : '儲存'}
+                    </button>
+                  </>
+                )}
+
+                {!isEditing && canSubmit && (
+                  <button
+                    onClick={handleSubmitForApproval}
+                    disabled={saving}
+                    className="rounded bg-blue-600 text-white px-4 py-2 text-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    送交審核
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* 工作項目 */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">工作項目</h3>
+                {isEditing && (
+                  <button onClick={addItem} className="rounded bg-black text-white px-3 py-1.5 text-sm">
+                    ＋ 新增項目
+                  </button>
+                )}
+              </div>
+
+              {(!isEditing ? dailyItems : editedItems).length === 0 ? (
+                <div className="text-center py-8 text-sm text-gray-500 border rounded">
+                  {dailyLog ? '尚無工作項目' : '尚未建立本日計畫（點右上角「建立 / 開始填寫」）'}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {(!isEditing ? dailyItems : editedItems).map((item, index) => (
+                    <div key={item.id} className="border rounded p-4 space-y-3">
+                      {isEditing ? (
+                        <>
+                          <div className="flex gap-3">
+                            <input
+                              type="text"
+                              className="flex-1 rounded border px-3 py-2 text-sm"
+                              placeholder="工作說明"
+                              value={item.description}
+                              onChange={(e) => updateItem(item.id, { description: e.target.value })}
+                            />
+                            <select
+                              className="w-24 rounded border px-3 py-2 text-sm"
+                              value={item.priority}
+                              onChange={(e) => updateItem(item.id, { priority: e.target.value as any })}
+                            >
+                              <option value="p1">P1</option>
+                              <option value="p2">P2</option>
+                              <option value="p3">P3</option>
+                              <option value="p4">P4</option>
+                            </select>
+                            <button
+                              onClick={() => removeItem(item.id)}
+                              className="text-red-600 px-3 py-2 text-sm hover:bg-red-50 rounded"
+                            >
+                              刪除
+                            </button>
+                          </div>
+                          <div className="flex gap-3">
+                            <input
+                              type="number"
+                              className="w-32 rounded border px-3 py-2 text-sm"
+                              placeholder="預估時數"
+                              value={item.estimated_hours ?? ''}
+                              onChange={(e) =>
+                                updateItem(item.id, {
+                                  estimated_hours: e.target.value ? parseFloat(e.target.value) : null,
+                                })
+                              }
+                            />
+                            <input
+                              type="text"
+                              className="flex-1 rounded border px-3 py-2 text-sm"
+                              placeholder="備註"
+                              value={item.notes ?? ''}
+                              onChange={(e) => updateItem(item.id, { notes: e.target.value })}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-start gap-3">
+                          <span className="text-sm font-medium text-gray-500 w-8">{index + 1}.</span>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">{item.description}</span>
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded ${
+                                  item.priority === 'p1'
+                                    ? 'bg-red-100 text-red-700'
+                                    : item.priority === 'p2'
+                                    ? 'bg-orange-100 text-orange-700'
+                                    : item.priority === 'p3'
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : 'bg-gray-100 text-gray-700'
+                                }`}
+                              >
+                                {item.priority}
+                              </span>
+                              <span className={`text-xs px-2 py-0.5 rounded ${item.status === 'done' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                                {item.status === 'done' ? '已完成' : '待處理'}
+                              </span>
+                            </div>
+                            {(item.estimated_hours || item.notes) && (
+                              <div className="mt-1 text-xs text-gray-500">
+                                {item.estimated_hours ? `預估 ${item.estimated_hours} 小時` : ''}
+                                {item.estimated_hours && item.notes ? ' · ' : ''}
+                                {item.notes ?? ''}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* 你原本：核准後才能勾完成（保留） */}
+                          {dailyLog?.status === 'approved' && (
+                            <input
+                              type="checkbox"
+                              className="mt-1"
+                              checked={item.status === 'done'}
+                              onChange={async (e) => {
+                                const newStatus = e.target.checked ? 'done' : 'todo'
+                                const { error } = await supabase.from('daily_items').update({ status: newStatus }).eq('id', item.id)
+                                if (!error) {
+                                  setDailyItems((items) => items.map((i) => (i.id === item.id ? { ...i, status: newStatus } : i)))
+                                }
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 備註 */}
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium">備註</h3>
+              {isEditing ? (
+                <textarea
+                  className="w-full rounded border px-3 py-2 text-sm min-h-[100px]"
+                  placeholder="填寫備註、反思、遇到的問題..."
+                  value={editedNotes}
+                  onChange={(e) => setEditedNotes(e.target.value)}
+                />
+              ) : (
+                <div className="text-sm text-gray-700 min-h-[60px] bg-gray-50 rounded p-3">{dailyLog?.notes || '無備註'}</div>
+              )}
+            </div>
+
+            {/* 審核區塊（主管用） */}
+            {isSupervisor && approval?.status === 'pending' && (
+              <div className="border-t pt-4 space-y-4">
+                <h3 className="text-sm font-medium">審核</h3>
+                <div className="space-y-3">
+                  <textarea
+                    id="approval-comments"
+                    className="w-full rounded border px-3 py-2 text-sm"
+                    placeholder="審核意見（選填）"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => {
+                        const el = document.getElementById('approval-comments') as HTMLTextAreaElement
+                        handleApproval(true, el?.value)
+                      }}
+                      disabled={saving}
+                      className="rounded bg-green-600 text-white px-4 py-2 text-sm hover:bg-green-700 disabled:opacity-50"
+                    >
+                      核准
+                    </button>
+                    <button
+                      onClick={() => {
+                        const el = document.getElementById('approval-comments') as HTMLTextAreaElement
+                        handleApproval(false, el?.value)
+                      }}
+                      disabled={saving}
+                      className="rounded border border-red-200 text-red-700 px-4 py-2 text-sm hover:bg-red-50 disabled:opacity-50"
+                    >
+                      退回
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 小提示 */}
+            {!dailyLog && !isEditing ? (
+              <div className="rounded bg-gray-50 p-3 text-sm text-gray-600">
+                今天尚未建立計畫。請按右上角「建立 / 開始填寫」開始新增工作項目與備註。
+              </div>
+            ) : null}
           </div>
-        )}
+        </div>
       </div>
     </div>
-  );
+  )
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  shell: { display: "flex", minHeight: "100vh", backgroundColor: "#f3f4f6" },
-  sidebarWrap: { width: 260, flexShrink: 0, backgroundColor: "white", borderRight: "1px solid #e5e7eb" },
-  main: { flex: 1, minWidth: 0, padding: 24 },
-
-  topbar: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12 },
-  h1: { fontSize: 20, fontWeight: 600, margin: 0, marginBottom: 6, color: "#111827" },
-  sub: { fontSize: 13, color: "#6b7280" },
-
-  alert: {
-    marginBottom: 16,
-    padding: "12px 16px",
-    backgroundColor: "#fef2f2",
-    border: "1px solid #fee2e2",
-    borderRadius: 8,
-    color: "#b91c1c",
-    fontSize: 14,
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-  },
-
-  card: { backgroundColor: "white", borderRadius: 12, border: "1px solid #e5e7eb", overflow: "hidden" },
-  cardHeader: {
-    padding: "16px 20px",
-    borderBottom: "1px solid #e5e7eb",
-    backgroundColor: "#f9fafb",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "baseline",
-    gap: 12,
-  },
-  h2: { fontSize: 16, fontWeight: 600, margin: 0, color: "#374151" },
-  cardBody: { padding: 20 },
-
-  btn: {
-    padding: "8px 12px",
-    fontSize: 14,
-    color: "#6b7280",
-    backgroundColor: "transparent",
-    border: "1px solid #e5e7eb",
-    borderRadius: 6,
-    cursor: "pointer",
-    transition: "all 0.2s",
-  },
-
-  weekBlock: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
-    background: "#fff",
-    overflow: "hidden",
-  },
-  weekTitle: {
-    padding: "10px 12px",
-    fontSize: 13,
-    fontWeight: 900,
-    background: "#f8fafc",
-    borderBottom: "1px solid #e5e7eb",
-    color: "#334155",
-  },
-
-  table: { borderCollapse: "collapse", minWidth: 1200, width: "100%", background: "#fff" },
-  th: {
-    border: "1px solid #000",
-    padding: 10,
-    background: "#ffe766",
-    textAlign: "center",
-    verticalAlign: "middle",
-    whiteSpace: "nowrap",
-  },
-  tdLeft: {
-    border: "1px solid #000",
-    padding: 10,
-    background: "#fff",
-    fontWeight: 900,
-    width: 160,
-    whiteSpace: "nowrap",
-    verticalAlign: "top",
-  },
-  tdCell: { border: "1px solid #000", padding: 10, verticalAlign: "top", minWidth: 150 },
-
-  itemCard: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 10,
-    padding: 10,
-    background: "#fff",
-    cursor: "pointer",
-  },
-
-  modalOverlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.35)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-    zIndex: 50,
-  },
-  modalCard: { width: "min(820px, 100%)", background: "#fff", borderRadius: 14, padding: 14, border: "1px solid #eee" },
-  input: { width: "100%", padding: 10, borderRadius: 10, border: "1px solid #ddd", outline: "none" },
-  label: { fontSize: 12, opacity: 0.75, marginBottom: 6, fontWeight: 800 },
-};
