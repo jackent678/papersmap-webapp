@@ -37,8 +37,7 @@ export default function AdminPage() {
       }
 
       // 用 default org 的 org_members 判斷是否 admin
-      // 這裡假設你有 get_default_org_id()，但前端拿不到直接用 SQL function 不方便，
-      // 所以直接查「自己在 org_members 的 role」，依你目前系統單一 org 寫法：
+      // 依你目前系統單一 org 寫法：查「自己在 org_members 的 role」
       const { data: mem, error: memErr } = await supabase
         .from('org_members')
         .select('role, is_active')
@@ -88,8 +87,17 @@ export default function AdminPage() {
     })
   }, [members, q])
 
+  // ✅ 前端防呆：禁止把任何人改成 admin（包含自己）
+  // ⚠️ 安全性最終仍要在 RPC / DB 端限制（我也附了 DB 建議在下面）
   async function setRole(user_id: string, role: MemberRow['role']) {
     setError(null)
+
+    // 不允許把 role 設為 admin
+    if (role === 'admin') {
+      setError('禁止透過此頁面變更為 admin 權限（請由資料庫/系統維運流程處理）。')
+      return
+    }
+
     try {
       const { error } = await supabase.rpc('admin_set_member_role', { p_user_id: user_id, p_role: role })
       if (error) throw error
@@ -189,10 +197,15 @@ export default function AdminPage() {
                       value={m.role}
                       onChange={(e) => setRole(m.user_id, e.target.value as any)}
                     >
-                      <option value="admin">admin</option>
+                      {/* ✅ 移除 admin 選項：避免 UI 變更成 admin */}
                       <option value="manager">manager</option>
                       <option value="member">member</option>
                     </select>
+
+                    {/* ✅ 若目前資料就是 admin，給提示（但不可在此頁改成 admin） */}
+                    {m.role === 'admin' && (
+                      <div className="text-[11px] text-gray-500 mt-1">此帳號為 admin（不可在此頁面升級/降級 admin）。</div>
+                    )}
                   </td>
 
                   <td className="py-2 pr-3">
@@ -216,7 +229,9 @@ export default function AdminPage() {
         </div>
 
         <div className="text-[11px] text-gray-500">
-          建議：停用成員比刪除安全（不會破壞歷史任務/專案資料）。角色：admin 可管理系統；manager 可管理任務（你可自行擴充）；member 一般使用。
+          建議：停用成員比刪除安全（不會破壞歷史任務/專案資料）。角色：manager 可管理任務；member 一般使用。
+          <br />
+          注意：此頁面<strong>禁止</strong>把任何人升級為 admin；如需 admin 請用資料庫維運流程處理。
         </div>
       </div>
     </div>

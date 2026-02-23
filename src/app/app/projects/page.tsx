@@ -9,9 +9,11 @@ import { supabase } from '@/lib/supabaseClient'
  * ✅ 調整重點：
  * 1) 只有主管（admin/manager）可進入此頁（非主管直接顯示無權限畫面）
  * 2) 取消審核機制：移除 pending_approval / rejected 狀態與相關文案/限制
- * 3) 此頁定位為「主管指派工作」：任務狀態與指派都由主管操作（不提供被指派者在此頁開始處理）
+ * 3) 此頁定位為「主管指派工作」：任務狀態與指派都由主管操作
  * 4) ✅ 新增：工作分配「預估完成時間 expected_finish_at」
- *    - 作為「到今日到期」與「逾期」判斷基準（status !== done）
+ * 5) ✅ 改為固定「只姓名」，並移除紅框顯示區塊（不對外顯示 email / 切換 UI）
+ * 6) ✅ FIX：org_members 不再 limit(1) 亂挑 org；改為「優先主管、再挑最新」
+ * 7) ✅ FIX：refresh() 也會重新載入 orgUsers（新註冊/新加入的人按更新就看得到）
  */
 
 type ProjectStatus = 'draft' | 'active' | 'on_hold' | 'completed' | 'archived'
@@ -23,6 +25,7 @@ type OrgMember = {
   org_id: string
   role: OrgMemberRole
   is_active: boolean
+  created_at?: string
 }
 
 type ProjectSummary = {
@@ -55,7 +58,7 @@ type ProjectTask = {
   assignee_user_id: string | null
   status: TaskStatus
   created_at?: string
-  expected_finish_at?: string | null // ✅ 新增：預估完成時間
+  expected_finish_at?: string | null
 }
 
 type ProjectAttachment = {
@@ -71,9 +74,11 @@ type ProjectAttachment = {
   created_at: string
 }
 
+/** ✅ 指派選單用：固定只姓名 */
 type OrgUserOption = {
   user_id: string
-  full_name: string
+  name: string
+  label: string
 }
 
 type TaskDraft = {
@@ -209,6 +214,12 @@ function isPermissionError(e: any) {
   )
 }
 
+/** 欄位不存在（例如 select 到 v_org_users.email 但 view 沒有） */
+function isMissingColumnError(e: any) {
+  const msg = (e?.message ?? '').toLowerCase()
+  return msg.includes('does not exist') && msg.includes('column')
+}
+
 /** ✅ datetime-local <-> ISO helpers */
 function toDatetimeLocalValue(iso: string | null | undefined) {
   if (!iso) return ''
@@ -247,6 +258,12 @@ function isOverdue(task: ProjectTask) {
   const due = new Date(task.expected_finish_at)
   const now = new Date()
   return due.getTime() < now.getTime()
+}
+
+/** ✅ 固定只姓名 label */
+function buildUserLabelNameOnly(name: string) {
+  const n = (name ?? '').trim()
+  return n || '未知使用者'
 }
 
 export default function ProjectsPage() {
@@ -323,13 +340,106 @@ export default function ProjectsPage() {
     }
 
     if (isPermissionError(e)) {
-      // 有些情境：表存在但被 RLS 擋，仍視為「表存在」
       setAttachmentsTableOk(true)
       return true
     }
 
     setAttachmentsTableOk(false)
     return false
+  }
+
+  /** ✅ 讀 org user list：固定只姓名（不讀 email） */
+  async function loadOrgUsers(pOrgId: string, currentUser: { id: string; email?: string | null }) {
+    // 1) 先嘗試 v_org_users
+    let baseRows: Array<{ user_id: string; full_name?: string | null }> = []
+    try {
+      const r1 = await supabase
+        .from('v_org_users')
+        .select('user_id, full_name')
+        .eq('org_id', pOrgId)
+        .order('full_name', { ascending: true })
+
+      if (r1.error) {
+        if (isMissingColumnError(r1.error)) throw r1.error
+        throw r1.error
+      }
+      baseRows = (r1.data ?? []) as any
+    } catch {
+      const r2 = await supabase
+        .from('v_org_users')
+        .select('user_id, full_name')
+        .eq('org_id', pOrgId)
+        .order('full_name', { ascending: true })
+
+      if (!r2.error) baseRows = (r2.data ?? []) as any
+    }
+
+    // 如果 v_org_users 完全拿不到，就至少讓自己能選
+    if (!baseRows || baseRows.length === 0) {
+      const fallbackName = (currentUser.email ?? '').trim() || currentUser.id.slice(0, 8)
+      const opt: OrgUserOption = {
+        user_id: currentUser.id,
+        name: fallbackName,
+        label: buildUserLabelNameOnly(fallbackName),
+      }
+      setOrgUsers([opt])
+      return
+    }
+
+    // 2) 用 profiles 補 display_name（不讀 email）
+    const userIds = baseRows.map((x) => x.user_id).filter(Boolean)
+    const { data: profs, error: pErr } = await supabase
+      .from('profiles')
+      .select('id, display_name')
+      .in('id', userIds)
+
+    const profMap = new Map<string, { display_name?: string | null }>()
+    if (!pErr && Array.isArray(profs)) {
+      for (const p of profs as any[]) {
+        if (p?.id) profMap.set(p.id, { display_name: p.display_name ?? null })
+      }
+    }
+
+    // 3) 合成 OrgUserOption（只姓名）
+    const opts: OrgUserOption[] = baseRows
+      .map((r) => {
+        const uid = r.user_id
+        const prof = profMap.get(uid)
+        const name = (r.full_name ?? prof?.display_name ?? '').trim()
+
+        const finalName = name || uid.slice(0, 8)
+
+        return {
+          user_id: uid,
+          name: finalName,
+          label: buildUserLabelNameOnly(finalName),
+        }
+      })
+      .filter((x) => !!x.user_id)
+
+    // 去重
+    const seen = new Set<string>()
+    const uniq = opts.filter((x) => {
+      if (seen.has(x.user_id)) return false
+      seen.add(x.user_id)
+      return true
+    })
+
+    setOrgUsers(uniq)
+  }
+
+  /** ✅ FIX：從 org_members 多筆 active 中「穩定挑出」要用的 org */
+  function pickMembership(mems: OrgMember[]) {
+    const supervisors = mems.filter((m) => m.role === 'admin' || m.role === 'manager')
+    const list = supervisors.length > 0 ? supervisors : mems
+
+    // 優先挑最新 created_at；如果沒 created_at 就維持原順序取第一筆
+    const sorted = [...list].sort((a, b) => {
+      const aa = a.created_at ? String(a.created_at) : ''
+      const bb = b.created_at ? String(b.created_at) : ''
+      return bb.localeCompare(aa)
+    })
+    return sorted[0]
   }
 
   // ========= init =========
@@ -351,15 +461,21 @@ export default function ProjectsPage() {
         }
         if (!cancelled) setUserId(user.id)
 
-        const { data: mem, error: memErr } = await supabase
+        // ✅ FIX：不要 limit(1)；抓全部 active membership 再挑
+        const { data: mems, error: memErr } = await supabase
           .from('org_members')
-          .select('org_id, role, is_active')
+          .select('org_id, role, is_active, created_at')
           .eq('user_id', user.id)
           .eq('is_active', true)
-          .limit(1)
-          .maybeSingle<OrgMember>()
 
         if (memErr) throw memErr
+        if (!mems || mems.length === 0) {
+          setError('找不到 org_id（請先建立 org_members，並確保 is_active=true）')
+          setLoading(false)
+          return
+        }
+
+        const mem = pickMembership(mems as OrgMember[])
         if (!mem?.org_id) {
           setError('找不到 org_id（請先建立 org_members，並確保 is_active=true）')
           setLoading(false)
@@ -395,10 +511,7 @@ export default function ProjectsPage() {
 
         if (list.length > 0) {
           const ids = list.map((p) => p.id)
-          const { data: creators, error: cErr } = await supabase
-            .from('projects')
-            .select('id, created_by')
-            .in('id', ids)
+          const { data: creators, error: cErr } = await supabase.from('projects').select('id, created_by').in('id', ids)
 
           if (!cErr && Array.isArray(creators)) {
             const m: Record<string, string> = {}
@@ -409,22 +522,9 @@ export default function ProjectsPage() {
           }
         }
 
-        // ✅ org users list：抓 v_org_users（由 profiles.display_name 產出 full_name）
-        const { data: us, error: usErr } = await supabase
-          .from('v_org_users')
-          .select('user_id, full_name')
-          .eq('org_id', mem.org_id)
-          .order('full_name', { ascending: true })
-
-        if (!usErr && Array.isArray(us) && us.length > 0) {
-          const opts: OrgUserOption[] = us
-            .map((r: any) => ({ user_id: r.user_id, full_name: r.full_name ?? r.user_id }))
-            .filter((x) => !!x.user_id)
-          if (!cancelled) setOrgUsers(opts)
-        } else {
-          // fallback：至少自己可選（顯示 email > id 前8）
-          const label = (user.email ?? '').trim() || user.id.slice(0, 8)
-          if (!cancelled) setOrgUsers([{ user_id: user.id, full_name: label }])
+        // ✅ org users list：固定只姓名
+        if (!cancelled) {
+          await loadOrgUsers(mem.org_id, { id: user.id, email: user.email ?? null })
         }
 
         if (!cancelled) ensureAttachmentsTable().catch(() => {})
@@ -439,7 +539,8 @@ export default function ProjectsPage() {
     return () => {
       cancelled = true
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function refresh() {
     if (!orgId) return
@@ -461,10 +562,7 @@ export default function ProjectsPage() {
 
       if (list.length > 0) {
         const ids = list.map((p) => p.id)
-        const { data: creators, error: cErr } = await supabase
-          .from('projects')
-          .select('id, created_by')
-          .in('id', ids)
+        const { data: creators, error: cErr } = await supabase.from('projects').select('id, created_by').in('id', ids)
 
         if (!cErr && Array.isArray(creators)) {
           const m: Record<string, string> = {}
@@ -473,6 +571,13 @@ export default function ProjectsPage() {
           })
           setCreatedByMap(m)
         }
+      }
+
+      // ✅ FIX：refresh 也要刷新 orgUsers（新註冊/新加入的人按更新就會出現）
+      const { data: userRes } = await supabase.auth.getUser()
+      const u = userRes.user
+      if (u) {
+        await loadOrgUsers(orgId, { id: u.id, email: u.email ?? null })
       }
     } catch (e: any) {
       setError(e?.message ?? '重新整理失敗')
@@ -628,7 +733,7 @@ export default function ProjectsPage() {
           description: t.description.trim(),
           assignee_user_id: t.assignee_user_id || null,
           status: 'todo' as TaskStatus,
-          expected_finish_at: fromDatetimeLocalValue(t.expected_finish_at), // ✅ 新增
+          expected_finish_at: fromDatetimeLocalValue(t.expected_finish_at),
         }))
         .filter((t) => !!t.description)
 
@@ -724,10 +829,7 @@ export default function ProjectsPage() {
     setTaskUpdatingId(task.id)
     setError(null)
     try {
-      const { error: uErr } = await supabase
-        .from('project_tasks')
-        .update({ assignee_user_id: nextAssigneeUserId })
-        .eq('id', task.id)
+      const { error: uErr } = await supabase.from('project_tasks').update({ assignee_user_id: nextAssigneeUserId }).eq('id', task.id)
       if (uErr) throw uErr
       await loadTasks(task.project_id)
     } catch (e: any) {
@@ -742,10 +844,7 @@ export default function ProjectsPage() {
     setTaskUpdatingId(task.id)
     setError(null)
     try {
-      const { error: uErr } = await supabase
-        .from('project_tasks')
-        .update({ expected_finish_at: nextIso })
-        .eq('id', task.id)
+      const { error: uErr } = await supabase.from('project_tasks').update({ expected_finish_at: nextIso }).eq('id', task.id)
       if (uErr) throw uErr
       await loadTasks(task.project_id)
     } catch (e: any) {
@@ -760,7 +859,6 @@ export default function ProjectsPage() {
     const desc = window.prompt('新增任務說明（將建立為未處理 todo）')
     if (!desc?.trim()) return
 
-    // ✅ 讓主管可順手填預估完成（可留空）
     const dt = window.prompt('預估完成時間（可留空，格式範例：2026-02-16T18:00）', '')
     const expectedIso = dt ? fromDatetimeLocalValue(dt.trim()) : null
 
@@ -805,7 +903,7 @@ export default function ProjectsPage() {
   function userLabel(uid: string | null) {
     if (!uid) return '未指派'
     const hit = orgUsers.find((u) => u.user_id === uid)
-    return hit?.full_name ?? uid
+    return hit?.label ?? uid.slice(0, 8)
   }
 
   // ========= Project edit/delete =========
@@ -873,7 +971,6 @@ export default function ProjectsPage() {
   async function deleteProject(p: ProjectSummary) {
     if (!isSupervisor) return
 
-    // 保留原本「創建者才能刪除」規則（可依你公司規則改成主管皆可刪）
     if (!isCreator(p.id)) {
       setError('只有建立此專案的人可以刪除。')
       return
@@ -1021,8 +1118,7 @@ export default function ProjectsPage() {
         <div className="rounded border bg-white p-6">
           <div className="text-lg font-semibold">無法進入</div>
           <div className="mt-2 text-sm text-gray-700">
-            你的角色為 <span className="font-mono">{orgRole}</span>，此功能僅提供{' '}
-            <span className="font-semibold">admin / manager</span> 使用。
+            你的角色為 <span className="font-mono">{orgRole}</span>，此功能僅提供 <span className="font-semibold">admin / manager</span> 使用。
           </div>
           <div className="mt-4 text-sm text-gray-600">請聯絡系統管理者將你加入 org_members 並設定 role 為 manager 或 admin。</div>
           <div className="mt-4">
@@ -1136,7 +1232,7 @@ export default function ProjectsPage() {
                         <option value="">未指派</option>
                         {orgUsers.map((u) => (
                           <option key={u.user_id} value={u.user_id}>
-                            {u.full_name}
+                            {u.label}
                           </option>
                         ))}
                       </select>
@@ -1203,10 +1299,7 @@ export default function ProjectsPage() {
             ) : (
               <div className="space-y-2">
                 {createFiles.map((f, idx) => (
-                  <div
-                    key={`${f.name}-${f.size}-${f.lastModified}`}
-                    className="flex items-start justify-between gap-3 rounded border p-3"
-                  >
+                  <div key={`${f.name}-${f.size}-${f.lastModified}`} className="flex items-start justify-between gap-3 rounded border p-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium break-words">{f.name}</div>
                       <div className="text-[11px] text-gray-500 mt-1">
@@ -1237,21 +1330,12 @@ export default function ProjectsPage() {
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
             <div className="md:col-span-6 space-y-1">
               <div className="text-xs text-gray-500">目標日期</div>
-              <input
-                type="date"
-                className="w-full rounded border px-3 py-2 text-sm"
-                value={newDue}
-                onChange={(e) => setNewDue(e.target.value)}
-              />
+              <input type="date" className="w-full rounded border px-3 py-2 text-sm" value={newDue} onChange={(e) => setNewDue(e.target.value)} />
             </div>
 
             <div className="md:col-span-6 space-y-1">
               <div className="text-xs text-gray-500">優先級</div>
-              <select
-                className="w-full rounded border px-3 py-2 text-sm"
-                value={newPriority}
-                onChange={(e) => setNewPriority(e.target.value as Priority)}
-              >
+              <select className="w-full rounded border px-3 py-2 text-sm" value={newPriority} onChange={(e) => setNewPriority(e.target.value as Priority)}>
                 <option value="p1">P1（最高）</option>
                 <option value="p2">P2</option>
                 <option value="p3">P3（預設）</option>
@@ -1265,11 +1349,7 @@ export default function ProjectsPage() {
           <button className="rounded border px-4 py-2 text-sm hover:bg-gray-50" onClick={closeCreateModal} disabled={creating}>
             取消
           </button>
-          <button
-            className="rounded bg-black text-white px-4 py-2 text-sm disabled:opacity-50"
-            onClick={createProject}
-            disabled={creating || !newName.trim()}
-          >
+          <button className="rounded bg-black text-white px-4 py-2 text-sm disabled:opacity-50" onClick={createProject} disabled={creating || !newName.trim()}>
             {creating ? '建立中…' : '建立'}
           </button>
         </div>
@@ -1280,21 +1360,12 @@ export default function ProjectsPage() {
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
           <div className="md:col-span-6 space-y-1">
             <div className="text-xs text-gray-500">搜尋（名稱/說明）</div>
-            <input
-              className="w-full rounded border px-3 py-2 text-sm"
-              placeholder="輸入關鍵字"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-            />
+            <input className="w-full rounded border px-3 py-2 text-sm" placeholder="輸入關鍵字" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
 
           <div className="md:col-span-3 space-y-1">
             <div className="text-xs text-gray-500">狀態</div>
-            <select
-              className="w-full rounded border px-3 py-2 text-sm"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-            >
+            <select className="w-full rounded border px-3 py-2 text-sm" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as any)}>
               <option value="all">全部</option>
               <option value="draft">草稿</option>
               <option value="active">執行中</option>
@@ -1385,11 +1456,7 @@ export default function ProjectsPage() {
                                 刪除
                               </button>
 
-                              <button
-                                className="rounded border px-3 py-1.5 text-sm hover:bg-white"
-                                onClick={cancelEdit}
-                                disabled={savingId === p.id || deletingId === p.id}
-                              >
+                              <button className="rounded border px-3 py-1.5 text-sm hover:bg-white" onClick={cancelEdit} disabled={savingId === p.id || deletingId === p.id}>
                                 取消
                               </button>
 
@@ -1547,17 +1614,13 @@ export default function ProjectsPage() {
                                       <span className="text-gray-300">｜</span>
                                       <span>預估完成：{t.expected_finish_at ? toDatetimeLocalValue(t.expected_finish_at).replace('T', ' ') : '-'}</span>
 
-                                      {dueToday && (
-                                        <span className="px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">今日到期</span>
-                                      )}
-                                      {overdue && (
-                                        <span className="px-2 py-0.5 rounded border bg-red-50 text-red-700 border-red-200">逾期</span>
-                                      )}
+                                      {dueToday && <span className="px-2 py-0.5 rounded border bg-blue-50 text-blue-700 border-blue-200">今日到期</span>}
+                                      {overdue && <span className="px-2 py-0.5 rounded border bg-red-50 text-red-700 border-red-200">逾期</span>}
                                     </div>
                                   </div>
 
                                   <div className="shrink-0 flex items-center gap-2">
-                                    {/* ✅ 預估完成時間（紅圈位置） */}
+                                    {/* ✅ 預估完成時間 */}
                                     <div className="flex items-center gap-2">
                                       <span className="text-xs text-gray-600">預估完成</span>
                                       <input
@@ -1575,9 +1638,7 @@ export default function ProjectsPage() {
                                       />
                                     </div>
 
-                                    <span className={cn('text-xs px-2 py-1 rounded border', taskStatusChip(t.status))}>
-                                      {taskStatusLabel(t.status)}
-                                    </span>
+                                    <span className={cn('text-xs px-2 py-1 rounded border', taskStatusChip(t.status))}>{taskStatusLabel(t.status)}</span>
 
                                     {canSupervisorSetStatus() ? (
                                       <>
@@ -1591,7 +1652,7 @@ export default function ProjectsPage() {
                                           <option value="">未指派</option>
                                           {orgUsers.map((u) => (
                                             <option key={u.user_id} value={u.user_id}>
-                                              {u.full_name}
+                                              {u.label}
                                             </option>
                                           ))}
                                         </select>

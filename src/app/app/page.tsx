@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabaseClient'
  * - 狀態模型：todo / in_progress / done (已移除 blocked / ready_for_review)
  * - 核心追蹤：逾期、今日到期、7日內到期、進行中、已完成（今日/本週）
  * - 支援預估完成時間 expected_finish_at（自動降級）
- * - 主管（admin/manager）可看全組織；成員只看自己
+ * - ✅ 主管（admin/manager）可看全組織；成員只看自己（方案A：前端修正，不動SQL）
  * - 列表顯示專案名稱、指派對象，並提供快速更新狀態
  */
 
@@ -30,26 +30,26 @@ type ProjectRow = {
   created_at: string | null
 }
 
-// 定義資料庫返回的原始任務型別
+// DB 原始任務型別
 type TaskRowRaw = {
   id: string
   org_id: string | null
   project_id: string
   description: string
   assignee_user_id: string | null
-  status: string  // 資料庫可能返回 string，需要轉換
+  status: string
   created_at: string
   expected_finish_at?: string | null
 }
 
-// 應用層使用的任務型別（已轉換 status）
+// App 端任務型別（status 已轉換）
 type TaskRow = {
   id: string
   org_id: string | null
   project_id: string
   description: string
   assignee_user_id: string | null
-  status: TaskStatus  // 確保是聯合型別
+  status: TaskStatus
   created_at: string
   expected_finish_at?: string | null
 }
@@ -122,13 +122,13 @@ function isPermissionError(error: any): boolean {
   return msg.includes('permission denied') || msg.includes('rls') || msg.includes('policy')
 }
 
-// 安全的狀態轉換函式
 function toTaskStatus(status: string): TaskStatus {
-  if (status === 'todo' || status === 'in_progress' || status === 'done') {
-    return status
-  }
-  // 預設返回 'todo' 作為安全選項
+  if (status === 'todo' || status === 'in_progress' || status === 'done') return status
   return 'todo'
+}
+
+function isSupervisorRole(r: Role) {
+  return r === 'admin' || r === 'manager'
 }
 
 // ========== 主元件 ==========
@@ -141,7 +141,6 @@ export default function AppDashboardPage() {
   const [userEmail, setUserEmail] = useState<string | null>(null)
   const [orgId, setOrgId] = useState<string | null>(null)
   const [role, setRole] = useState<Role>('member')
-  const isSupervisor = role === 'admin' || role === 'manager'
 
   // 資料
   const [tasks, setTasks] = useState<TaskRow[]>([])
@@ -158,10 +157,10 @@ export default function AppDashboardPage() {
   const [updatingTaskId, setUpdatingTaskId] = useState<string | null>(null)
 
   // ========== 輔助函式：使用者名稱、專案名稱 ==========
-  function getUserDisplayName(userId: string | null): string {
-    if (!userId) return '未指派'
-    const found = orgUsers.find(u => u.user_id === userId)
-    return found?.full_name || userId.slice(0, 8)
+  function getUserDisplayName(uid: string | null): string {
+    if (!uid) return '未指派'
+    const found = orgUsers.find(u => u.user_id === uid)
+    return found?.full_name || uid.slice(0, 8)
   }
 
   function getProjectName(projectId: string): string {
@@ -170,7 +169,7 @@ export default function AppDashboardPage() {
   }
 
   // ========== 預載專案名稱 ==========
-  async function preloadProjectNames(orgId: string, taskList: TaskRow[]) {
+  async function preloadProjectNames(currentOrgId: string, taskList: TaskRow[]) {
     const projectIds = Array.from(new Set(taskList.map(t => t.project_id).filter(Boolean)))
     if (projectIds.length === 0) return
 
@@ -182,24 +181,27 @@ export default function AppDashboardPage() {
       const { data, error } = await supabase
         .from('projects')
         .select('id, name')
-        .eq('org_id', orgId)
+        .eq('org_id', currentOrgId)
         .in('id', missingIds)
 
       if (error) {
         if (isPermissionError(error)) {
           setError('無法讀取專案名稱，請確認專案資料表權限。')
         }
-        // 設定為 null 避免重複請求
         setProjectMap(prev => {
           const next = { ...prev }
-          missingIds.forEach(id => { next[id] = null })
+          missingIds.forEach(id => {
+            next[id] = null
+          })
           return next
         })
         return
       }
 
       const newMap: Record<string, ProjectRow> = {}
-      ;(data || []).forEach((p: any) => { newMap[p.id] = p })
+      ;(data || []).forEach((p: any) => {
+        newMap[p.id] = p
+      })
       setProjectMap(prev => ({ ...prev, ...newMap }))
     } finally {
       setLoadingProjects(false)
@@ -207,13 +209,13 @@ export default function AppDashboardPage() {
   }
 
   // ========== 偵測 expected_finish_at 欄位是否存在 ==========
-  async function detectExpectedFinishColumn(orgId: string): Promise<boolean> {
+  async function detectExpectedFinishColumn(currentOrgId: string): Promise<boolean> {
     if (hasExpectedFinish !== null) return hasExpectedFinish
 
     const probe = await supabase
       .from('project_tasks')
       .select('id, expected_finish_at')
-      .eq('org_id', orgId)
+      .eq('org_id', currentOrgId)
       .limit(1)
 
     if (!probe.error) {
@@ -221,7 +223,6 @@ export default function AppDashboardPage() {
       return true
     }
 
-    // 權限錯誤仍視為可能存在（避免關閉功能）
     if (isPermissionError(probe.error)) {
       setHasExpectedFinish(true)
       return true
@@ -232,28 +233,29 @@ export default function AppDashboardPage() {
   }
 
   // ========== 載入核心資料 ==========
-  async function loadDashboardData(orgId: string, userRole: Role, currentUserId: string) {
+  async function loadDashboardData(currentOrgId: string, userRole: Role, currentUserId: string) {
     setError(null)
 
-    const hasEF = await detectExpectedFinishColumn(orgId)
+    const isSup = isSupervisorRole(userRole) // ✅ 用參數 role，避免 state 尚未更新
+    const hasEF = await detectExpectedFinishColumn(currentOrgId)
 
-    // 1. 組裝查詢欄位
+    // 1) 組裝查詢欄位
     let fields = 'id, org_id, project_id, description, assignee_user_id, status, created_at'
     if (hasEF) fields += ', expected_finish_at'
 
     let query = supabase
       .from('project_tasks')
       .select(fields)
-      .eq('org_id', orgId)
+      .eq('org_id', currentOrgId)
       .order('created_at', { ascending: false })
 
-    // 成員只看自己
-    if (!isSupervisor) {
+    // ✅ 成員只看自己；主管看全部（不動SQL）
+    if (!isSup) {
       query = query.eq('assignee_user_id', currentUserId)
     }
 
     const { data: taskData, error: taskError } = await query
-    
+
     if (taskError) {
       if (isPermissionError(taskError)) {
         throw new Error('無法讀取任務資料，請確認資料表權限設定。')
@@ -261,18 +263,15 @@ export default function AppDashboardPage() {
       throw taskError
     }
 
-    // 安全的型別轉換：先轉為 unknown，再轉為 TaskRowRaw[]
     const rawTasks = (taskData || []) as unknown as TaskRowRaw[]
-    
-    // 轉換為應用層任務型別（確保 status 是正確的聯合型別）
     const convertedTasks: TaskRow[] = rawTasks.map(task => ({
       ...task,
-      status: toTaskStatus(task.status)
+      status: toTaskStatus(task.status),
     }))
 
     setTasks(convertedTasks)
 
-    // 初始化專案快取狀態 (undefined 表示尚未載入)
+    // 初始化專案快取
     setProjectMap(prev => {
       const next = { ...prev }
       convertedTasks.forEach(t => {
@@ -280,19 +279,18 @@ export default function AppDashboardPage() {
       })
       return next
     })
-    await preloadProjectNames(orgId, convertedTasks)
+    await preloadProjectNames(currentOrgId, convertedTasks)
 
-    // 2. 載入組織成員（用於顯示姓名）
+    // 2) 載入組織成員（用於顯示姓名）
     const { data: users, error: usersError } = await supabase
       .from('v_org_users')
       .select('user_id, full_name')
-      .eq('org_id', orgId)
+      .eq('org_id', currentOrgId)
       .order('full_name')
 
     if (!usersError && users) {
       setOrgUsers(users.map((u: any) => ({ user_id: u.user_id, full_name: u.full_name || u.user_id })))
     } else {
-      // 至少包含自己
       setOrgUsers([{ user_id: currentUserId, full_name: userEmail || currentUserId.slice(0, 8) }])
     }
   }
@@ -306,7 +304,10 @@ export default function AppDashboardPage() {
       setError(null)
 
       try {
-        const { data: { user } } = await supabase.auth.getUser()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+
         if (!user) {
           setError('請先登入以查看儀表板')
           setLoading(false)
@@ -327,12 +328,14 @@ export default function AppDashboardPage() {
           .maybeSingle<OrgMember>()
 
         if (membershipError) throw membershipError
+
         if (!membership?.org_id) {
           setError('您尚未加入任何組織，請聯繫管理員。')
           setLoading(false)
           return
         }
 
+        // 先 set state（畫面用），再用參數帶入 loadDashboardData（查詢用）
         setOrgId(membership.org_id)
         setRole(membership.role)
 
@@ -345,7 +348,9 @@ export default function AppDashboardPage() {
     }
 
     initialize()
-    return () => { isMounted = false }
+    return () => {
+      isMounted = false
+    }
   }, [])
 
   // ========== 手動重新整理 ==========
@@ -368,6 +373,7 @@ export default function AppDashboardPage() {
     setError(null)
 
     try {
+      const isSup = isSupervisorRole(role) // ✅ 用當前 role 計算
       let query = supabase
         .from('project_tasks')
         .update({ status: newStatus })
@@ -376,7 +382,8 @@ export default function AppDashboardPage() {
         .select('id')
         .limit(1)
 
-      if (!isSupervisor) {
+      // 成員只能更新自己的任務（主管可更新全組織）
+      if (!isSup) {
         query = query.eq('assignee_user_id', userId)
       }
 
@@ -421,7 +428,6 @@ export default function AppDashboardPage() {
       if (t.status === 'in_progress') inProgress++
       if (t.status === 'done') completed++
 
-      // 今日完成（以 created_at 粗略估算，可改用 completed_at 更準確）
       if (t.status === 'done' && formatISODate(t.created_at) === todayKey) completedToday++
 
       if (hasEF && t.status !== 'done') {
@@ -434,16 +440,7 @@ export default function AppDashboardPage() {
       }
     })
 
-    return {
-      open,
-      inProgress,
-      completed,
-      overdue,
-      dueToday,
-      dueThisWeek,
-      completedToday,
-      hasEF,
-    }
+    return { open, inProgress, completed, overdue, dueToday, dueThisWeek, completedToday, hasEF }
   }, [tasks, hasExpectedFinish, todayKey, weekEndKey])
 
   // ========== 行動清單 ==========
@@ -462,7 +459,12 @@ export default function AppDashboardPage() {
 
     const overdue = hasEF
       ? list
-          .filter(t => t.status !== 'done' && formatISODate((t as any).expected_finish_at) !== '—' && formatISODate((t as any).expected_finish_at) < todayKey)
+          .filter(
+            t =>
+              t.status !== 'done' &&
+              formatISODate((t as any).expected_finish_at) !== '—' &&
+              formatISODate((t as any).expected_finish_at) < todayKey
+          )
           .sort(sortByEarliestEF)
           .slice(0, 8)
       : []
@@ -491,7 +493,7 @@ export default function AppDashboardPage() {
 
   // ========== 團隊負載（主管用） ==========
   const teamLoad = useMemo(() => {
-    if (!isSupervisor) return []
+    if (!isSupervisorRole(role)) return []
 
     const hasEF = !!hasExpectedFinish
     const workloadMap = new Map<string, { userId: string; open: number; overdue: number; inProgress: number }>()
@@ -514,7 +516,7 @@ export default function AppDashboardPage() {
     return Array.from(workloadMap.values())
       .sort((a, b) => b.overdue - a.overdue || b.inProgress - a.inProgress || b.open - a.open)
       .slice(0, 8)
-  }, [isSupervisor, tasks, hasExpectedFinish, todayKey])
+  }, [role, tasks, hasExpectedFinish, todayKey])
 
   // ========== 渲染 ==========
   return (
@@ -526,7 +528,8 @@ export default function AppDashboardPage() {
           <p className="mt-1 text-sm text-gray-500">
             {userEmail ? (
               <>
-
+                {userEmail}
+                {role && <span className="ml-2 text-xs text-gray-400">角色：{role}</span>}
                 {loadingProjects && <span className="ml-2 text-xs text-gray-400">更新專案名稱…</span>}
               </>
             ) : (
@@ -534,9 +537,7 @@ export default function AppDashboardPage() {
             )}
           </p>
           {hasExpectedFinish === false && (
-            <p className="mt-2 text-xs text-amber-600">
-              ⚠️ 未偵測到「預估完成時間」欄位，到期相關功能已隱藏
-            </p>
+            <p className="mt-2 text-xs text-amber-600">⚠️ 未偵測到「預估完成時間」欄位，到期相關功能已隱藏</p>
           )}
         </div>
 
@@ -578,42 +579,12 @@ export default function AppDashboardPage() {
           <section className="space-y-4">
             <h2 className="text-lg font-medium">即時總覽</h2>
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4 lg:grid-cols-6">
-              <KpiCard
-                label="逾期任務"
-                value={kpi.overdue}
-                intent="critical"
-                href="/app/issues"
-              />
-              <KpiCard
-                label="今日到期"
-                value={kpi.dueToday}
-                intent="warning"
-                href="/app/issues"
-              />
-              <KpiCard
-                label="本週到期"
-                value={kpi.dueThisWeek}
-                intent="neutral"
-                href="/app/issues"
-              />
-              <KpiCard
-                label="進行中"
-                value={kpi.inProgress}
-                intent="neutral"
-                href="/app/issues"
-              />
-              <KpiCard
-                label="今日完成"
-                value={kpi.completedToday}
-                intent="positive"
-                href="/app/issues"
-              />
-              <KpiCard
-                label="未完成總數"
-                value={kpi.open}
-                intent="neutral"
-                href="/app/issues"
-              />
+              <KpiCard label="逾期任務" value={kpi.overdue} intent="critical" href="/app/issues" />
+              <KpiCard label="今日到期" value={kpi.dueToday} intent="warning" href="/app/issues" />
+              <KpiCard label="本週到期" value={kpi.dueThisWeek} intent="neutral" href="/app/issues" />
+              <KpiCard label="進行中" value={kpi.inProgress} intent="neutral" href="/app/issues" />
+              <KpiCard label="今日完成" value={kpi.completedToday} intent="positive" href="/app/issues" />
+              <KpiCard label="未完成總數" value={kpi.open} intent="neutral" href="/app/issues" />
             </div>
           </section>
 
@@ -662,12 +633,13 @@ export default function AppDashboardPage() {
           </div>
 
           {/* 團隊負載（主管專區） */}
-          {isSupervisor && (
+          {isSupervisorRole(role) && (
             <section className="space-y-4">
               <div className="flex items-baseline justify-between">
                 <h2 className="text-lg font-medium">團隊負載</h2>
                 <span className="text-xs text-gray-500">依成員聚合 Open / WIP / Overdue</span>
               </div>
+
               {teamLoad.length === 0 ? (
                 <div className="rounded-lg border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
                   尚無團隊成員任務資料
@@ -712,8 +684,17 @@ export default function AppDashboardPage() {
 
 // ========== 子元件 ==========
 
-/** KPI 卡片 */
-function KpiCard({ label, value, intent, href }: { label: string; value: number; intent: 'critical' | 'warning' | 'positive' | 'neutral'; href: string }) {
+function KpiCard({
+  label,
+  value,
+  intent,
+  href,
+}: {
+  label: string
+  value: number
+  intent: 'critical' | 'warning' | 'positive' | 'neutral'
+  href: string
+}) {
   return (
     <div className="relative rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md">
       <div className="flex items-center justify-between">
@@ -730,7 +711,6 @@ function KpiCard({ label, value, intent, href }: { label: string; value: number;
   )
 }
 
-/** 行動任務列表 */
 function ActionTaskList({
   title,
   description,
@@ -774,24 +754,23 @@ function ActionTaskList({
         {items.map(task => {
           const isUpdating = updatingId === task.id
           return (
-            <div key={task.id} className="group rounded-md border border-gray-100 bg-gray-50/50 p-3 transition-colors hover:bg-gray-50">
+            <div
+              key={task.id}
+              className="group rounded-md border border-gray-100 bg-gray-50/50 p-3 transition-colors hover:bg-gray-50"
+            >
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium', taskStatusBadgeColor(task.status))}>
                       {taskStatusLabel(task.status)}
                     </span>
-                    <span className="truncate text-xs text-gray-600">
-                      專案：{projectNameFn(task.project_id)}
-                    </span>
+                    <span className="truncate text-xs text-gray-600">專案：{projectNameFn(task.project_id)}</span>
                   </div>
                   <p className="mt-1 text-sm text-gray-800 line-clamp-2">{task.description}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
                     <span>👤 {userNameFn(task.assignee_user_id)}</span>
                     <span>📅 建立 {formatISODate(task.created_at)}</span>
-                    {(task as any).expected_finish_at && (
-                      <span>⏳ 預計 {formatISODate((task as any).expected_finish_at)}</span>
-                    )}
+                    {(task as any).expected_finish_at && <span>⏳ 預計 {formatISODate((task as any).expected_finish_at)}</span>}
                   </div>
                 </div>
 
