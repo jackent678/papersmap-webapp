@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import PageHeader from "@/app/_components/PageHeader";
-import { supabase } from "@/lib/supabaseClient";
-
+import PageHeader from "../_components/PageHeader";
+import { supabase } from '../../../lib/supabaseClient'
 type OrgRole = "admin" | "manager" | "member";
 
 type Membership = {
