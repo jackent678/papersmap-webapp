@@ -16,6 +16,7 @@ import {
   LogOut,
   ChevronRight,
   Menu,
+  CheckCircle2,
 } from 'lucide-react'
 
 type Role = 'admin' | 'manager' | 'member'
@@ -54,14 +55,19 @@ interface NavItem {
   badge?: string
 }
 
+function getNavBadgeColor(badge: string) {
+  // ✅ badge 顏色依 badge 本身決定
+  if (badge === '管理員') return 'bg-purple-50 text-purple-700'
+  if (badge === '主管') return 'bg-blue-50 text-blue-700'
+  if (badge === '除錯') return 'bg-amber-50 text-amber-800'
+  return 'bg-gray-50 text-gray-700'
+}
+
 export default function Sidebar() {
   const pathname = usePathname()
 
   const [email, setEmail] = useState<string | null>(null)
-
-  // ✅ 顯示用名稱（註冊時填的名字）
   const [displayName, setDisplayName] = useState<string | null>(null)
-
   const [role, setRole] = useState<Role>('member')
   const [loading, setLoading] = useState(true)
   const [collapsed, setCollapsed] = useState(false)
@@ -71,39 +77,24 @@ export default function Sidebar() {
   // 導航項目定義（包含圖示）
   const navItems = useMemo<NavItem[]>(() => {
     const base: NavItem[] = [
-      {
-        href: '/app',
-        label: '儀表板',
-        icon: LayoutDashboard,
-        exact: true,
-      },
-      {
-        href: '/app/issues',
-        label: '任務管理',
-        icon: CheckSquare,
-      },
-      {
-        href: '/app/plans',
-        label: '日程計畫',
-        icon: Calendar,
-      },
+      { href: '/app', label: '儀表板', icon: LayoutDashboard, exact: true },
+      { href: '/app/issues', label: '任務管理', icon: CheckSquare },
+      { href: '/app/plans', label: '日程計畫', icon: Calendar },
     ]
+
+    // ✅ 完成中心：全員可見（一般成員只能在頁內看到自己的資料，由 RLS / HistoryPage scope 控制）
+    const completionItem: NavItem = {
+      href: '/app/completions', // ←如果你頁面不是這個路徑，改這行
+      label: '完成中心',
+      icon: CheckCircle2,
+      badge: isSupervisor ? '主管' : '',
+    }
 
     // 主管專用項目
     const supervisorItems: NavItem[] = isSupervisor
       ? [
-          {
-            href: '/app/projects',
-            label: '專案管理',
-            icon: FolderKanban,
-            badge: '主管',
-          },
-          {
-            href: '/app/manager',
-            label: '主管中心',
-            icon: Users,
-            badge: '主管',
-          },
+          { href: '/app/projects', label: '專案管理', icon: FolderKanban, badge: '主管' },
+          { href: '/app/manager', label: '主管中心', icon: Users, badge: '主管' },
         ]
       : []
 
@@ -111,29 +102,14 @@ export default function Sidebar() {
     const adminItems: NavItem[] =
       role === 'admin'
         ? [
-            {
-              href: '/app/admin',
-              label: '系統設定',
-              icon: Shield,
-              badge: '管理員',
-            },
-            {
-              href: '/app/debug',
-              label: '開發工具',
-              icon: Bug,
-              badge: '除錯',
-            },
+            { href: '/app/admin', label: '系統設定', icon: Shield, badge: '管理員' },
+            { href: '/app/debug', label: '開發工具', icon: Bug, badge: '除錯' },
           ]
         : []
 
-    // 帳號設定（所有人都能看到）
-    const accountItem: NavItem = {
-      href: '/app/account',
-      label: '帳號設定',
-      icon: Settings,
-    }
+    const accountItem: NavItem = { href: '/app/account', label: '帳號設定', icon: Settings }
 
-    return [...base, ...supervisorItems, ...adminItems, accountItem]
+    return [...base, completionItem, ...supervisorItems, ...adminItems, accountItem]
   }, [isSupervisor, role])
 
   useEffect(() => {
@@ -141,22 +117,17 @@ export default function Sidebar() {
 
     async function loadUserData() {
       setLoading(true)
-
       try {
-        const { data: { user } } = await supabase.auth.getUser()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
         if (!isMounted) return
 
         setEmail(user?.email ?? null)
 
-        // ✅ 讀取註冊時填的名稱（Supabase Auth user_metadata）
+        // ✅ 讀取註冊時填的名稱（Auth user_metadata）
         const meta: any = user?.user_metadata || {}
-        const nameFromMeta =
-          meta.full_name ||
-          meta.name ||
-          meta.display_name ||
-          meta.username ||
-          null
-
+        const nameFromMeta = meta.full_name || meta.name || meta.display_name || meta.username || null
         setDisplayName(nameFromMeta)
 
         if (user?.id) {
@@ -167,13 +138,12 @@ export default function Sidebar() {
             .eq('is_active', true)
 
           if (!error && data && data.length > 0) {
-            const roles = data.map(r => r.role)
-            const finalRole: Role =
-              roles.includes('admin')
-                ? 'admin'
-                : roles.includes('manager')
-                ? 'manager'
-                : 'member'
+            const roles = data.map((r: any) => r.role)
+            const finalRole: Role = roles.includes('admin')
+              ? 'admin'
+              : roles.includes('manager')
+              ? 'manager'
+              : 'member'
 
             if (isMounted) setRole(finalRole)
           } else {
@@ -198,18 +168,16 @@ export default function Sidebar() {
     window.location.href = '/login'
   }
 
-  // 檢查連結是否啟用
   const isLinkActive = (item: NavItem): boolean => {
     if (item.exact) return pathname === item.href
     return pathname.startsWith(item.href)
   }
 
-  // ✅ 最終顯示名稱：註冊名 > email 前綴 > 訪客
   const displayText = displayName || (email ? email.split('@')[0] : '訪客')
 
   return (
     <>
-      {/* 行動版折疊按鈕 - 只在手機板顯示 */}
+      {/* 行動版折疊按鈕 */}
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="lg:hidden fixed top-4 left-4 z-50 rounded-lg border border-gray-200 bg-white p-2 shadow-sm"
@@ -233,20 +201,15 @@ export default function Sidebar() {
             <Link href="/app" className="text-xl font-semibold tracking-tight text-gray-900">
               巨大數據科技
             </Link>
+
             <div className="mt-0.5 flex items-center gap-2">
               {loading ? (
                 <div className="h-4 w-24 animate-pulse rounded bg-gray-200" />
               ) : (
                 <>
-                  {/* ✅ 這裡就是紅框顯示的名稱 */}
                   <span className="text-xs text-gray-500">{displayText}</span>
                   <ChevronRight className="h-3 w-3 text-gray-400" />
-                  <span
-                    className={cn(
-                      'rounded-full px-2 py-0.5 text-[10px] font-medium',
-                      getRoleBadgeColor(role)
-                    )}
-                  >
+                  <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', getRoleBadgeColor(role))}>
                     {getRoleLabel(role)}
                   </span>
                 </>
@@ -258,7 +221,7 @@ export default function Sidebar() {
         {/* 導航連結 */}
         <nav className="flex-1 overflow-y-auto px-4 py-6">
           <div className="space-y-1">
-            {navItems.map(item => {
+            {navItems.map((item) => {
               const active = isLinkActive(item)
               const Icon = item.icon
 
@@ -270,46 +233,26 @@ export default function Sidebar() {
                     'group relative flex items-center gap-3 rounded-lg px-4 py-3',
                     'text-sm font-medium transition-all duration-200',
                     'hover:bg-gray-50',
-                    active
-                      ? 'bg-gray-900 text-white shadow-sm hover:bg-gray-800'
-                      : 'text-gray-700 hover:text-gray-900'
+                    active ? 'bg-gray-900 text-white shadow-sm hover:bg-gray-800' : 'text-gray-700 hover:text-gray-900'
                   )}
                 >
-                  <Icon
-                    className={cn(
-                      'h-5 w-5 transition-colors',
-                      active ? 'text-white' : 'text-gray-400 group-hover:text-gray-600'
-                    )}
-                  />
+                  <Icon className={cn('h-5 w-5 transition-colors', active ? 'text-white' : 'text-gray-400 group-hover:text-gray-600')} />
                   <span className="flex-1">{item.label}</span>
 
-                  {/* 徽章標籤（用於標示主管/管理員功能） */}
                   {item.badge && !active && (
-                    <span
-                      className={cn(
-                        'rounded-full px-2 py-0.5 text-[10px] font-medium',
-                        role === 'admin'
-                          ? 'bg-purple-50 text-purple-700'
-                          : 'bg-blue-50 text-blue-700'
-                      )}
-                    >
+                    <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', getNavBadgeColor(item.badge))}>
                       {item.badge}
                     </span>
                   )}
 
-                  {/* 啟用指示器 */}
-                  {active && (
-                    <span className="absolute left-0 top-1/2 h-8 w-1 -translate-y-1/2 rounded-r-full bg-white" />
-                  )}
+                  {active && <span className="absolute left-0 top-1/2 h-8 w-1 -translate-y-1/2 rounded-r-full bg-white" />}
                 </Link>
               )
             })}
           </div>
 
-          {/* 分隔線 */}
           <div className="my-6 border-t border-gray-100" />
 
-          {/* 快捷提示區塊 */}
           <div className="rounded-lg bg-gray-50 p-4">
             <h4 className="text-xs font-medium text-gray-500">快捷提示</h4>
             <p className="mt-2 text-xs text-gray-600">
@@ -337,12 +280,8 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* 背景遮罩（手機版折疊時） */}
       {!collapsed && (
-        <div
-          className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm lg:hidden"
-          onClick={() => setCollapsed(true)}
-        />
+        <div className="fixed inset-0 z-30 bg-black/20 backdrop-blur-sm lg:hidden" onClick={() => setCollapsed(true)} />
       )}
     </>
   )

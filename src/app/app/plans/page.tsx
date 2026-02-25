@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import PageHeader from '../_components/PageHeader'
-import { supabase } from '@/lib/supabaseClient'
+import { supabase } from '../../../lib/supabaseClient'
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns'
 import { zhTW } from 'date-fns/locale'
 
@@ -74,30 +74,23 @@ export default function PlansPage() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
-  // 用戶資訊
   const [userId, setUserId] = useState<string | null>(null)
   const [orgId, setOrgId] = useState<string | null>(null)
   const [userRole, setUserRole] = useState<string>('member')
   const isSupervisor = userRole === 'admin' || userRole === 'manager'
 
-  // 日期選擇
   const [selectedDate, setSelectedDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<ViewMode>('day')
 
-  // 每日工作日誌
   const [dailyLog, setDailyLog] = useState<DailyLog | null>(null)
   const [dailyItems, setDailyItems] = useState<DailyItem[]>([])
   const [approval, setApproval] = useState<Approval | null>(null)
 
-  // 編輯狀態
   const [isEditing, setIsEditing] = useState(false)
   const [editedNotes, setEditedNotes] = useState('')
   const [editedItems, setEditedItems] = useState<DailyItem[]>([])
 
-  // 主管審核用的成員列表
   const [orgUsers, setOrgUsers] = useState<OrgUser[]>([])
-
-  // 週檢視的資料
   const [weekLogs, setWeekLogs] = useState<Record<string, DailyLog>>({})
 
   // ====== init ======
@@ -126,7 +119,6 @@ export default function PlansPage() {
         setOrgId(member.org_id)
         setUserRole(member.role)
 
-        // 載入組織成員（供主管審核用）
         if (member.role === 'admin' || member.role === 'manager') {
           const { data: users } = await supabase
             .from('v_org_users')
@@ -156,7 +148,6 @@ export default function PlansPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 當日期改變時重新載入
   useEffect(() => {
     if (orgId && userId) {
       loadDailyLog(selectedDate, orgId, userId)
@@ -165,7 +156,6 @@ export default function PlansPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, orgId, userId, isSupervisor])
 
-  // 載入特定日期的日誌
   async function loadDailyLog(date: Date, orgIdParam: string, userIdParam: string) {
     const dateStr = format(date, 'yyyy-MM-dd')
 
@@ -189,6 +179,8 @@ export default function PlansPage() {
           .eq('daily_log_id', (log as any).id)
           .order('priority', { ascending: true })
         if (itemsErr) throw itemsErr
+
+        // ✅ 因為完成後會搬移刪除，所以這裡只會拿到未完成
         setDailyItems(((items as any) ?? []) as DailyItem[])
 
         const { data: approvalData } = await supabase
@@ -208,7 +200,6 @@ export default function PlansPage() {
     }
   }
 
-  // 載入週資料（你原本是 supervisor 才用）
   async function loadWeekData(orgIdParam: string, userIdParam: string) {
     const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 })
     const weekEnd = endOfWeek(selectedDate, { weekStartsOn: 1 })
@@ -230,7 +221,6 @@ export default function PlansPage() {
     setWeekLogs(logs)
   }
 
-  // ✅ 開始編輯（支援：未建立也能開始填寫）
   function startEditing() {
     setError(null)
     setSuccess(null)
@@ -245,7 +235,6 @@ export default function PlansPage() {
     setEditedItems([])
   }
 
-  // 新增工作項目
   function addItem() {
     const newItem: DailyItem = {
       id: `temp_${Date.now()}_${Math.random()}`,
@@ -269,7 +258,6 @@ export default function PlansPage() {
     setEditedItems((items) => items.filter((item) => item.id !== id))
   }
 
-  // 建立或更新日誌（你原本就有，我保留並補強）
   async function handleSaveDailyLog() {
     if (!orgId || !userId) return
 
@@ -281,7 +269,6 @@ export default function PlansPage() {
       const dateStr = format(selectedDate, 'yyyy-MM-dd')
 
       if (dailyLog) {
-        // 更新現有日誌
         const { error: updateError } = await supabase
           .from('daily_logs')
           .update({
@@ -292,7 +279,6 @@ export default function PlansPage() {
 
         if (updateError) throw updateError
 
-        // 更新工作項目
         for (const item of editedItems) {
           if (item.id.startsWith('temp_')) {
             const { error: insertError } = await supabase.from('daily_items').insert({
@@ -320,7 +306,6 @@ export default function PlansPage() {
           }
         }
 
-        // 刪除被移除的項目
         const originalIds = dailyItems.map((i) => i.id)
         const newIds = editedItems.map((i) => i.id).filter((id) => !id.startsWith('temp_'))
         const toDelete = originalIds.filter((id) => !newIds.includes(id))
@@ -330,7 +315,6 @@ export default function PlansPage() {
           if (delErr) throw delErr
         }
       } else {
-        // ✅ 建立新日誌
         const { data: newLog, error: insertError } = await supabase
           .from('daily_logs')
           .insert({
@@ -345,7 +329,6 @@ export default function PlansPage() {
 
         if (insertError) throw insertError
 
-        // 新增工作項目
         const itemsToInsert = editedItems
           .filter((x) => x.description?.trim())
           .map((item) => ({
@@ -375,7 +358,6 @@ export default function PlansPage() {
     }
   }
 
-  // 送審
   async function handleSubmitForApproval() {
     if (!dailyLog || !orgId || !userId) return
     setSaving(true)
@@ -389,7 +371,6 @@ export default function PlansPage() {
         .eq('id', dailyLog.id)
       if (updateError) throw updateError
 
-      // 建立審核記錄（避免重複：若已存在 pending 就不再 insert）
       const { data: existing } = await supabase
         .from('approvals')
         .select('id,status')
@@ -418,7 +399,6 @@ export default function PlansPage() {
     }
   }
 
-  // 審核（主管用）
   async function handleApproval(approved: boolean, comments?: string) {
     if (!dailyLog || !approval || !userId || !orgId) return
 
@@ -458,12 +438,28 @@ export default function PlansPage() {
     }
   }
 
-  // 切換日期
   function changeDate(delta: number) {
     const newDate = new Date(selectedDate)
     newDate.setDate(newDate.getDate() + delta)
     setSelectedDate(newDate)
     setIsEditing(false)
+  }
+
+  // ✅ 核准後：完成=搬移到履歷（從 daily_items 移除）
+  async function archiveToHistory(item: DailyItem) {
+    if (!dailyLog || dailyLog.status !== 'approved') return
+    setError(null)
+    setSuccess(null)
+
+    try {
+      const { error } = await supabase.rpc('archive_daily_item_to_history', { p_daily_item_id: item.id })
+      if (error) throw error
+
+      setDailyItems((xs) => xs.filter((x) => x.id !== item.id))
+      setSuccess('已完成並移至「完成履歷」')
+    } catch (e: any) {
+      setError(e?.message ?? '移至完成履歷失敗')
+    }
   }
 
   if (loading) {
@@ -475,16 +471,24 @@ export default function PlansPage() {
     )
   }
 
-  // ✅ 可編輯條件：未建立 / 草稿 / 已退回
   const canEdit = !dailyLog || dailyLog.status === 'draft' || dailyLog.status === 'rejected'
   const canSubmit = !!dailyLog && dailyLog.status === 'draft' && dailyItems.length > 0
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="每日 / 週計畫"
-        description={isSupervisor ? '檢視團隊成員的工作計畫並進行審核' : '建立每日工作計畫，送交主管審核'}
-      />
+      <div className="flex items-start justify-between gap-4">
+        <PageHeader
+          title="每日 / 週計畫"
+          description={isSupervisor ? '檢視團隊成員的工作計畫並進行審核' : '建立每日工作計畫，送交主管審核'}
+        />
+
+        {/* ✅ 新增：完成履歷入口（你可以之後做 /app/history 頁） */}
+        <div className="shrink-0">
+          <Link className="rounded border px-3 py-2 text-sm hover:bg-gray-50 inline-block" href="/app/history">
+            查看完成履歷
+          </Link>
+        </div>
+      </div>
 
       {error && <div className="rounded border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
       {success && <div className="rounded border border-green-200 bg-green-50 p-4 text-sm text-green-700">{success}</div>}
@@ -498,9 +502,7 @@ export default function PlansPage() {
                 <button
                   key={mode}
                   onClick={() => setViewMode(mode)}
-                  className={`flex-1 rounded px-3 py-1.5 text-xs ${
-                    viewMode === mode ? 'bg-black text-white' : 'border hover:bg-gray-50'
-                  }`}
+                  className={`flex-1 rounded px-3 py-1.5 text-xs ${viewMode === mode ? 'bg-black text-white' : 'border hover:bg-gray-50'}`}
                 >
                   {mode === 'day' && '日'}
                   {mode === 'week' && '週'}
@@ -542,7 +544,19 @@ export default function PlansPage() {
                       }`}
                     >
                       <span>{format(day, 'MM/dd EEE', { locale: zhTW })}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${badgeClass(!log ? 'muted' : log.status === 'approved' ? 'ok' : log.status === 'pending' ? 'warn' : log.status === 'rejected' ? 'danger' : 'muted')}`}>
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded ${badgeClass(
+                          !log
+                            ? 'muted'
+                            : log.status === 'approved'
+                              ? 'ok'
+                              : log.status === 'pending'
+                                ? 'warn'
+                                : log.status === 'rejected'
+                                  ? 'danger'
+                                  : 'muted'
+                        )}`}
+                      >
                         {!log && '未填寫'}
                         {log?.status === 'draft' && '草稿'}
                         {log?.status === 'pending' && '審核中'}
@@ -560,30 +574,22 @@ export default function PlansPage() {
         {/* 右側 */}
         <div className="lg:col-span-3">
           <div className="rounded border bg-white p-6 space-y-6">
-            {/* 標題列 */}
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-medium">{format(selectedDate, 'yyyy年MM月dd日', { locale: zhTW })} 工作計畫</h2>
                 <div className="flex items-center gap-2 mt-1">{dailyStatusBadge(dailyLog)}</div>
               </div>
 
-              {/* ✅ 按鈕區：加入「建立」 */}
               <div className="flex gap-2">
                 {!isEditing && canEdit && (
-                  <button
-                    onClick={startEditing}
-                    className="rounded border px-4 py-2 text-sm hover:bg-gray-50"
-                  >
+                  <button onClick={startEditing} className="rounded border px-4 py-2 text-sm hover:bg-gray-50">
                     {dailyLog ? '編輯' : '建立 / 開始填寫'}
                   </button>
                 )}
 
                 {isEditing && (
                   <>
-                    <button
-                      onClick={cancelEditing}
-                      className="rounded border px-4 py-2 text-sm hover:bg-gray-50"
-                    >
+                    <button onClick={cancelEditing} className="rounded border px-4 py-2 text-sm hover:bg-gray-50">
                       取消
                     </button>
                     <button
@@ -621,7 +627,7 @@ export default function PlansPage() {
 
               {(!isEditing ? dailyItems : editedItems).length === 0 ? (
                 <div className="text-center py-8 text-sm text-gray-500 border rounded">
-                  {dailyLog ? '尚無工作項目' : '尚未建立本日計畫（點右上角「建立 / 開始填寫」）'}
+                  {dailyLog ? '尚無待完成項目（完成的已移到完成履歷）' : '尚未建立本日計畫（點右上角「建立 / 開始填寫」）'}
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -647,10 +653,7 @@ export default function PlansPage() {
                               <option value="p3">P3</option>
                               <option value="p4">P4</option>
                             </select>
-                            <button
-                              onClick={() => removeItem(item.id)}
-                              className="text-red-600 px-3 py-2 text-sm hover:bg-red-50 rounded"
-                            >
+                            <button onClick={() => removeItem(item.id)} className="text-red-600 px-3 py-2 text-sm hover:bg-red-50 rounded">
                               刪除
                             </button>
                           </div>
@@ -686,16 +689,13 @@ export default function PlansPage() {
                                   item.priority === 'p1'
                                     ? 'bg-red-100 text-red-700'
                                     : item.priority === 'p2'
-                                    ? 'bg-orange-100 text-orange-700'
-                                    : item.priority === 'p3'
-                                    ? 'bg-blue-100 text-blue-700'
-                                    : 'bg-gray-100 text-gray-700'
+                                      ? 'bg-orange-100 text-orange-700'
+                                      : item.priority === 'p3'
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : 'bg-gray-100 text-gray-700'
                                 }`}
                               >
                                 {item.priority}
-                              </span>
-                              <span className={`text-xs px-2 py-0.5 rounded ${item.status === 'done' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
-                                {item.status === 'done' ? '已完成' : '待處理'}
                               </span>
                             </div>
                             {(item.estimated_hours || item.notes) && (
@@ -707,20 +707,15 @@ export default function PlansPage() {
                             )}
                           </div>
 
-                          {/* 你原本：核准後才能勾完成（保留） */}
+                          {/* ✅ 核准後才可「完成並移至履歷」 */}
                           {dailyLog?.status === 'approved' && (
-                            <input
-                              type="checkbox"
-                              className="mt-1"
-                              checked={item.status === 'done'}
-                              onChange={async (e) => {
-                                const newStatus = e.target.checked ? 'done' : 'todo'
-                                const { error } = await supabase.from('daily_items').update({ status: newStatus }).eq('id', item.id)
-                                if (!error) {
-                                  setDailyItems((items) => items.map((i) => (i.id === item.id ? { ...i, status: newStatus } : i)))
-                                }
-                              }}
-                            />
+                            <button
+                              className="rounded border px-3 py-1.5 text-sm hover:bg-gray-50"
+                              onClick={() => archiveToHistory(item)}
+                              title="完成後會移至完成履歷"
+                            >
+                              完成
+                            </button>
                           )}
                         </div>
                       )}
@@ -750,11 +745,7 @@ export default function PlansPage() {
               <div className="border-t pt-4 space-y-4">
                 <h3 className="text-sm font-medium">審核</h3>
                 <div className="space-y-3">
-                  <textarea
-                    id="approval-comments"
-                    className="w-full rounded border px-3 py-2 text-sm"
-                    placeholder="審核意見（選填）"
-                  />
+                  <textarea id="approval-comments" className="w-full rounded border px-3 py-2 text-sm" placeholder="審核意見（選填）" />
                   <div className="flex gap-2">
                     <button
                       onClick={() => {
@@ -781,11 +772,8 @@ export default function PlansPage() {
               </div>
             )}
 
-            {/* 小提示 */}
             {!dailyLog && !isEditing ? (
-              <div className="rounded bg-gray-50 p-3 text-sm text-gray-600">
-                今天尚未建立計畫。請按右上角「建立 / 開始填寫」開始新增工作項目與備註。
-              </div>
+              <div className="rounded bg-gray-50 p-3 text-sm text-gray-600">今天尚未建立計畫。請按右上角「建立 / 開始填寫」開始新增工作項目與備註。</div>
             ) : null}
           </div>
         </div>
